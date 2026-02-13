@@ -171,6 +171,11 @@ Open questions:
 1. **`data:` base64 key URIs** — blocked by ffmpeg's extension check, fixable with
    `-allowed_extensions ALL` but `crypto+https://` still had issues with full playlists.
 
-2. **Key as temp file** — avoids extension check but same `crypto+https://` issue.
+2. **`data:text/plain;hex` key URIs** — works with `-allowed_extensions ALL`. The key
+   is embedded as hex directly in the m3u8: `URI="data:text/plain;hex,91b274..."`.
+   Tested successfully but crashed ~20% through a full chapter, likely due to pre-signed
+   segment URLs expiring (~1 hour TTL). Not viable for long chapters at real-time speed.
 
-3. **Local HTTP proxy** — overkill now that `-headers` works.
+3. **Key as temp file** — avoids extension check but same `crypto+https://` issue.
+
+4. **Local HTTP proxy** — overkill now that `-headers` works.
