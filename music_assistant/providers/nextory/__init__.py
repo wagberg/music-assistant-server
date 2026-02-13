@@ -82,14 +82,14 @@ async def get_config_entries(
         if not username or not password:
             raise LoginFailed("Username and password are required")
 
-        async with NextoryClient(auto_select_profile=True) as client:
+        async with NextoryClient() as client:
             login_token = await client.login(username, password)
             values[CONF_LOGIN_TOKEN] = login_token
 
     # Build profile options if authenticated
     profile_options: list[ConfigValueOption] = []
     if login_token and not profile_token:
-        async with NextoryClient(login_token=login_token, auto_select_profile=True) as client:
+        async with NextoryClient(login_token=login_token) as client:
             profiles_resp = await client.get_profiles()
             for profile in profiles_resp.profiles:
                 profile_options.append(ConfigValueOption(profile.name, profile.login_key))
@@ -97,7 +97,7 @@ async def get_config_entries(
     # Handle profile selection action
     login_key = cast("str | None", values.get(CONF_LOGIN_KEY))
     if action == CONF_ACTION_SELECT_PROFILE and login_token and login_key and not profile_token:
-        async with NextoryClient(login_token=login_token, auto_select_profile=True) as client:
+        async with NextoryClient(login_token=login_token) as client:
             profile_token = await client.select_profile(login_key)
             values[CONF_PROFILE_TOKEN] = profile_token
 
@@ -179,7 +179,6 @@ class NextoryProvider(MusicProvider):
         self._client = NextoryClient(
             login_token=login_token,
             login_key=login_key,
-            auto_select_profile=True,
             profile_token=profile_token,
         )
 
@@ -288,7 +287,9 @@ class NextoryProvider(MusicProvider):
         format_id = streamdetails.data["format_id"]
         audio_package = await self._client.get_audio_package(format_id)
         seek_ms = seek_position * 1000
-        headers = self._get_ffmpeg_headers()
+        headers = "".join(
+            f"{k}: {v}\r\n" for k, v in self._client.auth_headers.items()
+        )
 
         for chapter_file in audio_package.files:
             chapter_end = chapter_file.start_at + chapter_file.duration
@@ -332,36 +333,14 @@ class NextoryProvider(MusicProvider):
 
         # Add to ongoing list if not already there
         if self._ongoing_list_id and book_id not in self._ongoing_product_ids:
-            url = "https://api.nextory.com/library/v1/me/custom_lists/operations"
-            async with self._client.post(
-                url,
-                json={
-                    "operations": [
-                        {"product_id": book_id, "list_id": self._ongoing_list_id, "type": "add"}
-                    ]
-                },
-            ) as resp:
-                await resp.read()
+            await self._client.add_to_list(book_id, self._ongoing_list_id)
             self._ongoing_product_ids.add(book_id)
 
         # Remove from ongoing if fully played
         if fully_played and self._ongoing_list_id and book_id in self._ongoing_product_ids:
-            url = "https://api.nextory.com/library/v1/me/custom_lists/operations"
-            async with self._client.post(
-                url,
-                json={
-                    "operations": [
-                        {"product_id": book_id, "list_id": self._ongoing_list_id, "type": "remove"}
-                    ]
-                },
-            ) as resp:
-                await resp.read()
+            await self._client.remove_from_list(book_id, self._ongoing_list_id)
             self._ongoing_product_ids.discard(book_id)
-            # Mark as completed in Nextory
-            async with self._client.post(
-                f"https://api.nextory.com/library/v1/me/products/{book_id}/completed"
-            ) as resp:
-                await resp.read()
+            await self._client.mark_completed(book_id)
 
         await self._client.patch_position(
             profile_id=self._profile_id,
@@ -369,19 +348,6 @@ class NextoryProvider(MusicProvider):
             percentage=percentage,
             elapsed_time=elapsed_ms,
         )
-
-    def _get_ffmpeg_headers(self) -> str:
-        """Build ffmpeg -headers string from client auth state."""
-        login_mw = self._client._middlewares[0]
-        profile_mw = self._client._middlewares[1]
-        headers = {**login_mw._headers}
-        if login_mw.login_token:
-            headers["X-Login-Token"] = login_mw.login_token
-        if login_mw.country:
-            headers["X-Country-Code"] = login_mw.country
-        if profile_mw.profile_token:
-            headers["X-Profile-Token"] = profile_mw.profile_token
-        return "".join(f"{k}: {v}\r\n" for k, v in headers.items())
 
     def _parse_audiobook(self, product: ProductResponse, format_id: int) -> Audiobook:
         """Parse Nextory product to Music Assistant Audiobook."""
