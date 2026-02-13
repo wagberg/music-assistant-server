@@ -23,7 +23,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
+from music_assistant_models.streamdetails import StreamDetails
 from nextory import NextoryClient
 from nextory.models import FormatType, LibraryListType, ProductResponse
 
@@ -48,7 +48,6 @@ CONF_ACTION_SELECT_PROFILE = "select_profile"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_AUDIOBOOKS,
-    ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
 }
 
@@ -66,7 +65,10 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """Return Config entries to setup this provider.
+
+    Multi-step auth flow: Authenticate → Select Profile → Save.
+    """
     if values is None:
         values = {}
 
@@ -184,16 +186,15 @@ class NextoryProvider(MusicProvider):
         # Resolve profile_id for position sync
         profiles = await self._client.get_profiles()
         profile = next((p for p in profiles.profiles if p.login_key == login_key), None)
-        if profile:
-            self._profile_id = profile.id
-        else:
-            self._profile_id = profiles.profiles[0].id
+        self._profile_id = profile.id if profile else profiles.profiles[0].id
 
-        # Cache ongoing list ID
+        # Cache ongoing list ID for library management
         self._ongoing_product_ids = set()
         self._ongoing_list_id = None
         libraries = await self._client.get_libraries()
-        ongoing = next((lst for lst in libraries.lists if lst.type == LibraryListType.ONGING), None)
+        ongoing = next(
+            (lst for lst in libraries.lists if lst.type == LibraryListType.ONGING), None
+        )
         if ongoing:
             self._ongoing_list_id = ongoing.id
 
@@ -223,23 +224,14 @@ class NextoryProvider(MusicProvider):
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
         """Get audiobooks from the ongoing library."""
         libraries = await self._client.get_libraries()
-
-        # Find the ongoing list
         ongoing_list = next(
-            (lst for lst in libraries.lists if lst.type == LibraryListType.ONGING),
-            None,
+            (lst for lst in libraries.lists if lst.type == LibraryListType.ONGING), None
         )
         if not ongoing_list:
-            self.logger.debug(
-                "No ongoing list found. Available lists: %s",
-                [(lst.type, lst.name, lst.id) for lst in libraries.lists],
-            )
             return
 
         products = await self._client.get_library(LibraryListType.ONGING, ongoing_list.id)
-
         for product in products.products:
-            # Only include audiobooks (HLS format)
             hls_format = next((f for f in product.formats if f.type == FormatType.HLS), None)
             if hls_format:
                 yield self._parse_audiobook(product, hls_format.identifier)
@@ -250,21 +242,11 @@ class NextoryProvider(MusicProvider):
         product = await self._client.get_product_details(int(book_id))
         return self._parse_audiobook(product, int(format_id))
 
-    def _get_ffmpeg_headers(self) -> str:
-        """Build ffmpeg -headers string from client auth state."""
-        login_mw = self._client._middlewares[0]
-        profile_mw = self._client._middlewares[1]
-        headers = {**login_mw._headers}
-        if login_mw.login_token:
-            headers["X-Login-Token"] = login_mw.login_token
-        if login_mw.country:
-            headers["X-Country-Code"] = login_mw.country
-        if profile_mw.profile_token:
-            headers["X-Profile-Token"] = profile_mw.profile_token
-        return "".join(f"{k}: {v}\r\n" for k, v in headers.items())
-
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
-        """Get resume position for an audiobook."""
+        """Get resume position for an audiobook.
+
+        :returns: Tuple of (fully_played, elapsed_time_ms).
+        """
         _, format_id = item_id.split("_")
         pos = await self._client.get_position(int(format_id))
         if pos.elapsed_time is None:
@@ -295,7 +277,12 @@ class NextoryProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream by letting ffmpeg handle HLS natively."""
+        """Return the audio stream by letting ffmpeg handle HLS natively.
+
+        Iterates over chapters sequentially, running one ffmpeg per chapter.
+        Auth headers are passed via -headers so ffmpeg can fetch playlists,
+        encryption keys, and segments directly.
+        """
         from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
         format_id = streamdetails.data["format_id"]
@@ -383,11 +370,22 @@ class NextoryProvider(MusicProvider):
             elapsed_time=elapsed_ms,
         )
 
+    def _get_ffmpeg_headers(self) -> str:
+        """Build ffmpeg -headers string from client auth state."""
+        login_mw = self._client._middlewares[0]
+        profile_mw = self._client._middlewares[1]
+        headers = {**login_mw._headers}
+        if login_mw.login_token:
+            headers["X-Login-Token"] = login_mw.login_token
+        if login_mw.country:
+            headers["X-Country-Code"] = login_mw.country
+        if profile_mw.profile_token:
+            headers["X-Profile-Token"] = profile_mw.profile_token
+        return "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+
     def _parse_audiobook(self, product: ProductResponse, format_id: int) -> Audiobook:
         """Parse Nextory product to Music Assistant Audiobook."""
         item_id = f"{product.id}_{format_id}"
-
-        # Find the HLS format for duration and cover
         hls_format = next((f for f in product.formats if f.identifier == format_id), None)
 
         audiobook = Audiobook(
@@ -404,14 +402,10 @@ class NextoryProvider(MusicProvider):
             },
         )
 
-        # Set authors and narrators
         audiobook.authors.set([a.name for a in product.authors])
         audiobook.narrators.set([n.name for n in product.narrators])
-
-        # Set metadata
         audiobook.metadata.description = product.description_full or product.blurb
 
-        # Set cover image
         if hls_format and hls_format.img_url:
             audiobook.metadata.images = UniqueList(
                 [
