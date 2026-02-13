@@ -250,61 +250,18 @@ class NextoryProvider(MusicProvider):
         product = await self._client.get_product_details(int(book_id))
         return self._parse_audiobook(product, int(format_id))
 
-    async def _get_hls_segments(
-        self, master_url: str, skip_seconds: float = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Download and decrypt HLS segments from a master playlist URL.
-
-        :param master_url: HLS master playlist URL.
-        :param skip_seconds: Skip segments until this many seconds have elapsed.
-        """
-        import re
-
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-        media_url = master_url.replace("master", "media")
-
-        async with self._client.get(media_url) as resp:
-            media_m3u = await resp.text()
-
-        key_bytes: bytes | None = None
-        iv_bytes: bytes | None = None
-        key_cache: dict[str, bytes] = {}
-        elapsed = 0.0
-        seg_duration = 0.0
-
-        for line in media_m3u.splitlines():
-            line = line.strip()
-            if line.startswith("#EXT-X-KEY:"):
-                if "METHOD=NONE" in line:
-                    key_bytes = None
-                    iv_bytes = None
-                elif "METHOD=AES-128" in line:
-                    uri_match = re.search(r'URI="([^"]+)"', line)
-                    iv_match = re.search(r"IV=0x([0-9a-fA-F]+)", line)
-                    if uri_match:
-                        key_url = uri_match.group(1)
-                        if key_url not in key_cache:
-                            async with self._client.get(key_url) as resp:
-                                key_cache[key_url] = await resp.read()
-                        key_bytes = key_cache[key_url]
-                    if iv_match:
-                        iv_bytes = bytes.fromhex(iv_match.group(1))
-            elif line.startswith("#EXTINF:"):
-                seg_duration = float(line.split(":")[1].split(",")[0])
-            elif line and not line.startswith("#"):
-                elapsed += seg_duration
-                if elapsed <= skip_seconds:
-                    continue
-                async with self._client.get(line) as resp:
-                    seg_data = await resp.read()
-                if key_bytes and iv_bytes:
-                    cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv_bytes))
-                    decryptor = cipher.decryptor()
-                    seg_data = decryptor.update(seg_data) + decryptor.finalize()
-                    pad_len = seg_data[-1]
-                    seg_data = seg_data[:-pad_len]
-                yield seg_data
+    def _get_ffmpeg_headers(self) -> str:
+        """Build ffmpeg -headers string from client auth state."""
+        login_mw = self._client._middlewares[0]
+        profile_mw = self._client._middlewares[1]
+        headers = {**login_mw._headers}
+        if login_mw.login_token:
+            headers["X-Login-Token"] = login_mw.login_token
+        if login_mw.country:
+            headers["X-Country-Code"] = login_mw.country
+        if profile_mw.profile_token:
+            headers["X-Profile-Token"] = profile_mw.profile_token
+        return "".join(f"{k}: {v}\r\n" for k, v in headers.items())
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Get resume position for an audiobook."""
@@ -338,28 +295,36 @@ class NextoryProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream by downloading and decrypting HLS segments."""
+        """Return the audio stream by letting ffmpeg handle HLS natively."""
         from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
         format_id = streamdetails.data["format_id"]
         audio_package = await self._client.get_audio_package(format_id)
         seek_ms = seek_position * 1000
+        headers = self._get_ffmpeg_headers()
 
-        async def _segment_generator() -> AsyncGenerator[bytes, None]:
-            for chapter_file in audio_package.files:
-                chapter_end = chapter_file.start_at + chapter_file.duration
-                if seek_ms >= chapter_end:
-                    continue  # skip entire chapter
-                skip = max(0, (seek_ms - chapter_file.start_at) / 1000)
-                async for seg_data in self._get_hls_segments(chapter_file.uri, skip):
-                    yield seg_data
+        for chapter_file in audio_package.files:
+            chapter_end = chapter_file.start_at + chapter_file.duration
+            if seek_ms >= chapter_end:
+                continue  # skip entire chapter
 
-        async for chunk in get_ffmpeg_stream(
-            audio_input=_segment_generator(),
-            input_format=AudioFormat(content_type=ContentType.AAC),
-            output_format=AudioFormat(content_type=ContentType.FLAC),
-        ):
-            yield chunk
+            extra_input_args = [
+                "-headers", headers,
+                "-allowed_extensions", "ALL",
+            ]
+            # Seek within this chapter
+            chapter_offset = max(0, (seek_ms - chapter_file.start_at) / 1000)
+            if chapter_offset > 0:
+                extra_input_args += ["-ss", str(chapter_offset)]
+                seek_ms = 0  # only seek in the first chapter
+
+            async for chunk in get_ffmpeg_stream(
+                audio_input=chapter_file.uri,
+                input_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                output_format=AudioFormat(content_type=ContentType.FLAC),
+                extra_input_args=extra_input_args,
+            ):
+                yield chunk
 
     async def on_played(
         self,
