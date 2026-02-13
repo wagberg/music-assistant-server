@@ -1,0 +1,9 @@
+{
+  "type": "music",
+  "domain": "nextory",
+  "name": "Nextory",
+  "description": "Stream audiobooks from Nextory.",
+  "codeowners": [],
+  "requirements": [],
+  "documentation": "https://nextory.com"
+}
