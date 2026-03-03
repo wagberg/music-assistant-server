@@ -83,6 +83,11 @@ class AirPlay2Stream(AirPlayProtocol):
         # Get the provider's DACP ID for remote control callbacks
         prov = cast("AirPlayProvider", self.prov)
 
+        # Get the output format media quality
+        quality = (
+            f"{self.pcm_format.sample_rate}/{self.pcm_format.bit_depth}/{self.pcm_format.channels}"
+        )
+
         cli_args = [
             cli_binary,
             "--name",
@@ -109,6 +114,8 @@ class AirPlay2Stream(AirPlayProtocol):
             self.commands_pipe.path,
             "--latency",
             str(latency),
+            "--quality",
+            quality,
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
