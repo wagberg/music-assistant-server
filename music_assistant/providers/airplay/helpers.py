@@ -166,7 +166,7 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
                     cli_path,
                     "--testrun",
                 ]
-                passing_output = "cliap2 check"
+                passing_output = "cliap check"
 
             returncode, output = await check_output(*args)
             _LOGGER.debug("%s returned %d with output: %s", cli_path, int(returncode), str(output))
@@ -183,7 +183,7 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
     if protocol == StreamingProtocol.RAOP:
         package = "cliraop"
     elif protocol == StreamingProtocol.AIRPLAY2:
-        package = "cliap2"
+        package = "cliap"
     else:
         raise RuntimeError(f"Unsupported streaming protocol requested: {protocol}")
 
