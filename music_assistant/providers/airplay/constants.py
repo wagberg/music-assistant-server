@@ -70,7 +70,7 @@ AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
     bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
 )
 AIRPLAY_PCM_FORMAT = AudioFormat(
-    content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
+    content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24
 )
 
 BROKEN_AIRPLAY_MODELS = (
