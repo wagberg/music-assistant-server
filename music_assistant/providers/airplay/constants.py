@@ -9,8 +9,6 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import INTERNAL_PCM_FORMAT
-
 DOMAIN = "airplay"
 
 
@@ -65,12 +63,11 @@ ENABLE_LATE_JOIN_DEFAULT: Final[bool] = True
 
 FALLBACK_VOLUME: Final[int] = 20
 
-AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
-    content_type=INTERNAL_PCM_FORMAT.content_type,
-    sample_rate=44100,
-    bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
-)
+
 AIRPLAY_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE, sample_rate=441000, bit_depth=16
+)
+AIRPLAY_HIRES_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24
 )
 

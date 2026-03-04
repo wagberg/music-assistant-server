@@ -11,6 +11,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_PCM_FORMAT,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
@@ -21,6 +22,8 @@ from music_assistant.providers.airplay.helpers import get_cli_binary
 from ._protocol import AirPlayProtocol
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
+
     from music_assistant.providers.airplay.provider import AirPlayProvider
 
 
@@ -33,6 +36,11 @@ class RaopStream(AirPlayProtocol):
     the actual timestamped playback, which reads pcm audio from stdin
     and we can send some interactive commands using a named pipe.
     """
+
+    @property
+    def pcm_format(self) -> AudioFormat:
+        """Return the PCM audio format string used for streaming to this protocol."""
+        return AIRPLAY_PCM_FORMAT
 
     async def start(self, start_ntp: int) -> None:
         """Start CLIRaop process."""

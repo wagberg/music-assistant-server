@@ -12,6 +12,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
+    AIRPLAY_HIRES_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
@@ -19,6 +20,8 @@ from music_assistant.providers.airplay.helpers import get_cli_binary
 from ._protocol import AirPlayProtocol
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
+
     from music_assistant.providers.airplay.provider import AirPlayProvider
 
 
@@ -52,6 +55,11 @@ class AirPlay2Stream(AirPlayProtocol):
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             mass_level = 5
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
+
+    @property
+    def pcm_format(self) -> AudioFormat:
+        """Return the PCM audio format string used for streaming to this protocol."""
+        return AIRPLAY_HIRES_PCM_FORMAT
 
     async def start(self, start_ntp: int) -> None:
         """Start cliap2 process."""

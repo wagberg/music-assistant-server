@@ -9,11 +9,13 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, create_sample_rates_config_entry
 from music_assistant.helpers.util import is_valid_mac_address
@@ -21,7 +23,6 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
-    AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
@@ -528,12 +529,17 @@ class AirPlayPlayer(Player):
             self.stream = None
 
         # select audio source
-        audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT, self.player_id)
+        flow_format = AudioFormat(
+            content_type=ContentType.from_bit_depth(24),
+            sample_rate=48000,
+            bit_depth=24,
+        )
+        audio_source = self.mass.streams.get_stream(media, flow_format, self.player_id)
 
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_FLOW_PCM_FORMAT)
+        stream_session = AirPlayStreamSession(provider, sync_clients, flow_format)
         await stream_session.start(audio_source)
         self._attr_elapsed_time = time.time() - stream_session.start_time
         self._attr_elapsed_time_last_updated = time.time()

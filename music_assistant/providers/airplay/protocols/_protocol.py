@@ -14,6 +14,7 @@ from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
 from music_assistant.providers.airplay.helpers import generate_active_remote_id
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
     from music_assistant.helpers.process import AsyncProcess
@@ -30,9 +31,6 @@ class AirPlayProtocol(ABC):
 
     _cli_proc: AsyncProcess | None  # reference to the (protocol-specific) CLI process
     session: AirPlayStreamSession | None = None  # reference to the active stream session (if any)
-
-    # the pcm audio format used for streaming to this protocol
-    pcm_format = AIRPLAY_PCM_FORMAT
 
     def __init__(
         self,
@@ -65,6 +63,11 @@ class AirPlayProtocol(ABC):
     def running(self) -> bool:
         """Return boolean if this stream is running."""
         return not self._stopped and self._cli_proc is not None and not self._cli_proc.closed
+
+    @property
+    def pcm_format(self) -> AudioFormat:
+        """Return the PCM audio format string used for streaming to this protocol."""
+        return AIRPLAY_PCM_FORMAT
 
     @abstractmethod
     async def start(self, start_ntp: int) -> None:
