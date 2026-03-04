@@ -411,3 +411,11 @@ class AirPlayStreamSession:
         )
         await ffmpeg.start()
         self._player_ffmpeg[airplay_player.player_id] = ffmpeg
+        # temporary log for brad to verify ffmpeg is starting with the correct params for the player
+        airplay_player.provider.logger.info(
+            "\n##############################################################################\n"
+            "FFMPEG for player %s started with params: \n%s\n"
+            "##############################################################################\n",
+            airplay_player.name,
+            " ".join(ffmpeg._args),
+        )
