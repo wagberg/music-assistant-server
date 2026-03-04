@@ -302,7 +302,11 @@ class AirPlayPlayer(Player):
             self.device_info.manufacturer, self.device_info.model
         ):
             return StreamingProtocol.AIRPLAY2
-        return StreamingProtocol.RAOP
+        if self.raop_discovery_info:
+            return StreamingProtocol.RAOP
+        if self.airplay_discovery_info:
+            return StreamingProtocol.AIRPLAY2
+        raise ValueError("No valid protocol available for this player")
 
     def _get_pairing_config_entries(
         self, values: dict[str, ConfigValueType] | None
