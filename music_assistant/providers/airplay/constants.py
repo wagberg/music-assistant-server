@@ -68,7 +68,7 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16
 )
 AIRPLAY_HIRES_PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=32
+    content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24
 )
 
 BROKEN_AIRPLAY_MODELS = (
