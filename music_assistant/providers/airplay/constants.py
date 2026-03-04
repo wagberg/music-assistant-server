@@ -65,10 +65,10 @@ FALLBACK_VOLUME: Final[int] = 20
 
 
 AIRPLAY_PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_S16LE, sample_rate=441000, bit_depth=16
+    content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16
 )
 AIRPLAY_HIRES_PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24
+    content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=32
 )
 
 BROKEN_AIRPLAY_MODELS = (
