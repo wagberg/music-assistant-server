@@ -57,6 +57,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    UNKNOWN_ARTIST,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
@@ -1417,16 +1418,12 @@ class LocalFileSystemProvider(MusicProvider):
             track_id = f"{cue_item.relative_path}::track{cue_track.number:02d}"
             track_name = cue_track.title or f"Track {cue_track.number}"
 
-            # determine track artist: CUE performer > album performer > album artists
-            track_performer = cue_track.performer or album_performer
+            # determine track artist: CUE track performer > CUE album performer > unknown
+            track_performer = cue_track.performer or album_performer or UNKNOWN_ARTIST
             track_artists: UniqueList[Artist | ItemMapping] = UniqueList()
-            if track_performer:
-                artist = await self._parse_artist(name=track_performer)
-                if artist:
-                    track_artists.append(artist)
-            if not track_artists and album:
-                # fall back to album artists when no performer in CUE
-                track_artists = UniqueList(album.artists)
+            artist = await self._parse_artist(name=track_performer)
+            if artist:
+                track_artists.append(artist)
 
             track = Track(
                 item_id=track_id,
