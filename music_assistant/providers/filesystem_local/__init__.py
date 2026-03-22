@@ -67,6 +67,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers.cue_sheet import CueSheet, parse_cue_sheet
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
@@ -95,6 +96,7 @@ from .constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PATH,
     CONF_ENTRY_PROPAGATE_GENRES,
+    CUE_EXTENSIONS,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     PLAYLIST_EXTENSIONS,
@@ -168,6 +170,31 @@ async def get_config_entries(
     if instance_id is None or values is None:
         return (CONF_ENTRY_CONTENT_TYPE, *base_entries)
     return (CONF_ENTRY_CONTENT_TYPE_READ_ONLY, *base_entries)
+
+
+def _register_cue_track_ids(cue_item: FileSystemItem, cur_filenames: set[str]) -> None:
+    """Register synthetic CUE track IDs in cur_filenames when CUE file is unchanged.
+
+    :param cue_item: The CUE file's FileSystemItem.
+    :param cur_filenames: Set of current filenames to update.
+    """
+    cue_path = cue_item.absolute_path
+    try:
+        for encoding in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+            try:
+                with open(cue_path, encoding=encoding) as f:
+                    content = f.read()
+                break
+            except (UnicodeDecodeError, ValueError):
+                continue
+        else:
+            return
+        cue_data = parse_cue_sheet(content)
+        for track in cue_data.tracks:
+            track_id = f"{cue_item.relative_path}::track{track.number:02d}"
+            cur_filenames.add(track_id)
+    except Exception:  # noqa: S110
+        pass
 
 
 class LocalFileSystemProvider(MusicProvider):
@@ -405,6 +432,9 @@ class LocalFileSystemProvider(MusicProvider):
                 if item.checksum == prev_checksum:
                     # unchanged, just record it as still present
                     cur_filenames.add(item.relative_path)
+                    # for unchanged CUE files, register synthetic track IDs
+                    if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
+                        _register_cue_track_ids(item, cur_filenames)
                 else:
                     items_to_process.append((item, prev_checksum))
 
@@ -425,7 +455,7 @@ class LocalFileSystemProvider(MusicProvider):
 
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
                 nonlocal processed_count
-                if await self._process_item_async(item, prev_checksum):
+                if await self._process_item_async(item, prev_checksum, cur_filenames):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
                 if processed_count % 50 == 0 or processed_count == total_items:
@@ -480,17 +510,39 @@ class LocalFileSystemProvider(MusicProvider):
         self.available = available
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
 
-    async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
+    async def _process_item_async(
+        self,
+        item: FileSystemItem,
+        prev_checksum: str | None,
+        cur_filenames: set[str] | None = None,
+    ) -> bool:
         """Process a single item asynchronously.
 
         :param item: The filesystem item to process.
         :param prev_checksum: Previous checksum from the database, or None for new items.
+        :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
 
+            # handle CUE sheet files
+            if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
+                tracks = await self._parse_cue_tracks(item)
+                for track in tracks:
+                    track.favorite = False
+                    await self.mass.music.tracks.add_item_to_library(
+                        track, overwrite_existing=prev_checksum is not None
+                    )
+                    if cur_filenames is not None:
+                        cur_filenames.add(track.item_id)
+                return True
+
             if item.ext in TRACK_EXTENSIONS and self.media_content_type == "music":
                 if not self._sync_tracks:
+                    return False
+                # skip audio files that have a companion CUE sheet
+                cue_path = item.absolute_path.rsplit(".", 1)[0] + ".cue"
+                if await asyncio.to_thread(os.path.isfile, cue_path):
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
@@ -577,18 +629,24 @@ class LocalFileSystemProvider(MusicProvider):
         album_ids = set()
         artist_ids = set()
         for file_path in deleted_files:
-            _, ext = file_path.rsplit(".", 1)
-            if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
-            elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
-                controller = self.mass.music.get_controller(MediaType.AUDIOBOOK)
-            elif ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
-                controller = self.mass.music.get_controller(MediaType.PLAYLIST)
-            elif ext in TRACK_EXTENSIONS and self.media_content_type == "music":
+            # handle CUE-derived track IDs (format: "path.cue::trackNN")
+            if "::track" in file_path and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
-            else:
-                # unsupported file extension?
+            elif "." not in file_path:
                 continue
+            else:
+                _, ext = file_path.rsplit(".", 1)
+                if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
+                    controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
+                elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
+                    controller = self.mass.music.get_controller(MediaType.AUDIOBOOK)
+                elif ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
+                    controller = self.mass.music.get_controller(MediaType.PLAYLIST)
+                elif ext in TRACK_EXTENSIONS and self.media_content_type == "music":
+                    controller = self.mass.music.get_controller(MediaType.TRACK)
+                else:
+                    # unsupported file extension?
+                    continue
 
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
@@ -1208,6 +1266,273 @@ class LocalFileSystemProvider(MusicProvider):
 
         return artist
 
+    # --- CUE sheet support ---
+
+    async def _read_cue_file(self, absolute_path: str) -> str:
+        """Read CUE file content with encoding fallback.
+
+        :param absolute_path: Absolute path to the CUE file.
+        """
+        for encoding in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+            try:
+                async with aiofiles.open(absolute_path, encoding=encoding) as f:
+                    return await f.read()
+            except (UnicodeDecodeError, ValueError):
+                continue
+        msg = f"Unable to read CUE file with any supported encoding: {absolute_path}"
+        raise MusicAssistantError(msg)
+
+    async def _find_cue_audio_file(
+        self,
+        cue_item: FileSystemItem,
+        cue_sheet: CueSheet,
+    ) -> str | None:
+        """Find the audio file referenced by a CUE sheet.
+
+        Tries in order: CUE FILE command path, same-name matching, single audio file in dir.
+
+        :param cue_item: The CUE file's FileSystemItem.
+        :param cue_sheet: The parsed CUE sheet data.
+        """
+        return await asyncio.to_thread(self._find_cue_audio_file_sync, cue_item, cue_sheet)
+
+    @staticmethod
+    def _find_cue_audio_file_sync(
+        cue_item: FileSystemItem,
+        cue_sheet: CueSheet,
+    ) -> str | None:
+        """Find the audio file referenced by a CUE sheet (sync version).
+
+        :param cue_item: The CUE file's FileSystemItem.
+        :param cue_sheet: The parsed CUE sheet data.
+        """
+        cue_dir = os.path.dirname(cue_item.absolute_path)
+
+        # 1. try the filename from the CUE FILE command
+        if cue_sheet.file_path:
+            candidate = os.path.join(cue_dir, cue_sheet.file_path)
+            if os.path.isfile(candidate):
+                return candidate
+
+        # 2. same-name matching: album.cue -> album.{flac,mp3,...}
+        cue_stem = cue_item.filename.rsplit(".", 1)[0]
+        for ext in TRACK_EXTENSIONS:
+            candidate = os.path.join(cue_dir, f"{cue_stem}.{ext}")
+            if os.path.isfile(candidate):
+                return candidate
+
+        # 3. look for any single audio file in the same directory
+        audio_files = []
+        try:
+            for entry in os.scandir(cue_dir):
+                if not entry.is_file():
+                    continue
+                if "." in entry.name:
+                    ext = entry.name.rsplit(".", 1)[1].lower()
+                    if ext in TRACK_EXTENSIONS:
+                        audio_files.append(entry.path)
+        except OSError:
+            pass
+        if len(audio_files) == 1:
+            return audio_files[0]
+
+        return None
+
+    async def _parse_cue_tracks(self, cue_item: FileSystemItem) -> list[Track]:
+        """Parse CUE sheet and return individual Track objects.
+
+        Uses hybrid metadata: timing from CUE sheet, album metadata from audio file tags.
+
+        :param cue_item: The CUE file's FileSystemItem.
+        """
+        cue_content = await self._read_cue_file(cue_item.absolute_path)
+        cue_sheet = parse_cue_sheet(cue_content)
+
+        if not cue_sheet.tracks:
+            self.logger.warning("CUE sheet has no tracks: %s", cue_item.relative_path)
+            return []
+
+        # find the audio file
+        audio_path = await self._find_cue_audio_file(cue_item, cue_sheet)
+        if audio_path is None:
+            self.logger.error("Audio file not found for CUE sheet: %s", cue_item.relative_path)
+            return []
+
+        # parse audio file tags for format info and album-level metadata
+        tags = await async_parse_tags(audio_path)
+        total_duration = tags.duration or 0.0
+
+        if total_duration <= 0:
+            self.logger.error(
+                "Could not determine duration for audio file of CUE sheet: %s",
+                cue_item.relative_path,
+            )
+            return []
+
+        audio_format = AudioFormat(
+            content_type=ContentType.try_parse(
+                audio_path.rsplit(".", 1)[-1] if "." in audio_path else tags.format
+            ),
+            sample_rate=tags.sample_rate,
+            bit_depth=tags.bits_per_sample,
+            channels=tags.channels,
+            bit_rate=tags.bit_rate,
+        )
+
+        # sort tracks by start position
+        sorted_tracks = sorted(cue_sheet.tracks, key=lambda t: t.start_position)
+
+        # create album from audio file tags (hybrid approach)
+        audio_relative_path = get_relative_path(self.base_path, audio_path)
+        album = await self._parse_album(
+            track_path=audio_relative_path,
+            track_tags=tags,
+            track_created_at=cue_item.created_at,
+        )
+
+        # fall back to CUE metadata if audio file lacks album tags
+        if album and not album.name and cue_sheet.title:
+            album.name = cue_sheet.title
+
+        # determine album artist from CUE if not in audio tags
+        album_performer = cue_sheet.performer
+
+        tracks: list[Track] = []
+        for i, cue_track in enumerate(sorted_tracks):
+            # calculate duration: until next track or end of file
+            if i + 1 < len(sorted_tracks):
+                duration = sorted_tracks[i + 1].start_position - cue_track.start_position
+            else:
+                duration = total_duration - cue_track.start_position
+
+            if duration <= 0:
+                continue
+
+            track_id = f"{cue_item.relative_path}::track{cue_track.number:02d}"
+            track_name = cue_track.title or f"Track {cue_track.number}"
+
+            # determine track artist
+            track_performer = cue_track.performer or album_performer
+            track_artists: UniqueList[Artist | ItemMapping] = UniqueList()
+            if track_performer:
+                artist = await self._parse_artist(name=track_performer)
+                if artist:
+                    track_artists.append(artist)
+
+            track = Track(
+                item_id=track_id,
+                provider=self.instance_id,
+                name=track_name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=track_id,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        audio_format=audio_format,
+                        details=cue_item.checksum,
+                        in_library=True,
+                    )
+                },
+                track_number=cue_track.number,
+                disc_number=0,
+                duration=int(duration),
+                date_added=(
+                    datetime.fromtimestamp(cue_item.created_at, tz=UTC)
+                    if cue_item.created_at
+                    else None
+                ),
+            )
+
+            if track_artists:
+                track.artists = track_artists
+
+            if album:
+                track.album = album
+
+            # add external IDs from CUE if available
+            if cue_track.isrc:
+                track.external_ids.add((ExternalID.ISRC, cue_track.isrc))
+            if cue_track.musicbrainz_trackid:
+                track.external_ids.add((ExternalID.MB_RECORDING, cue_track.musicbrainz_trackid))
+
+            # metadata from audio file tags (cover art, genres, etc.)
+            if tags.has_cover_image:
+                track.metadata.images = UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=audio_relative_path,
+                            provider=self.instance_id,
+                            remotely_accessible=False,
+                        )
+                    ]
+                )
+
+            if tags.genres:
+                track.metadata.genres = set(split_items(tags.genres))
+
+            tracks.append(track)
+
+        return tracks
+
+    async def _get_stream_details_for_cue_track(self, item_id: str) -> StreamDetails:
+        """Return the streamdetails for a CUE-sheet-derived track.
+
+        :param item_id: Track ID in format "path/to/file.cue::trackNN".
+        """
+        cue_path, track_num_str = item_id.rsplit("::track", 1)
+        track_number = int(track_num_str)
+
+        cue_item = await self.resolve(cue_path)
+        cue_content = await self._read_cue_file(cue_item.absolute_path)
+        cue_sheet = parse_cue_sheet(cue_content)
+
+        # find the audio file
+        audio_path = await self._find_cue_audio_file(cue_item, cue_sheet)
+        if audio_path is None:
+            msg = f"Audio file not found for CUE sheet: {cue_path}"
+            raise MediaNotFoundError(msg)
+
+        tags = await async_parse_tags(audio_path)
+        total_duration = tags.duration or 0.0
+
+        # find our track and calculate start/duration
+        cue_track = next((t for t in cue_sheet.tracks if t.number == track_number), None)
+        if cue_track is None:
+            msg = f"Track {track_number} not found in CUE sheet: {cue_path}"
+            raise MediaNotFoundError(msg)
+
+        start_seconds = cue_track.start_position
+        # find next track to calculate end
+        sorted_tracks = sorted(cue_sheet.tracks, key=lambda t: t.start_position)
+        track_idx = next(i for i, t in enumerate(sorted_tracks) if t.number == track_number)
+        if track_idx + 1 < len(sorted_tracks):
+            end_seconds = sorted_tracks[track_idx + 1].start_position
+        else:
+            end_seconds = total_duration
+        duration = end_seconds - start_seconds
+
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(
+                    audio_path.rsplit(".", 1)[-1] if "." in audio_path else tags.format
+                ),
+                sample_rate=tags.sample_rate,
+                bit_depth=tags.bits_per_sample,
+                channels=tags.channels,
+                bit_rate=tags.bit_rate,
+            ),
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.LOCAL_FILE,
+            duration=int(duration),
+            path=audio_path,
+            can_seek=False,
+            allow_seek=False,
+            extra_input_args=["-ss", str(start_seconds), "-t", str(duration)],
+        )
+
     async def _parse_audiobook(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
         """Parse Audiobook details from file tags.
 
@@ -1720,6 +2045,9 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
+        # strip CUE track suffix if present (e.g. "album.cue::track03" -> "album.cue")
+        if "::track" in file_path:
+            file_path = file_path.split("::track", maxsplit=1)[0]
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
@@ -1755,6 +2083,9 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _get_stream_details_for_track(self, item_id: str) -> StreamDetails:
         """Return the streamdetails for a track/song."""
+        if "::track" in item_id:
+            return await self._get_stream_details_for_cue_track(item_id)
+
         library_item = await self.mass.music.tracks.get_library_item_by_prov_id(
             item_id, self.instance_id
         )

@@ -166,6 +166,7 @@ TRACK_EXTENSIONS = {
     "mp+",
 }
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
+CUE_EXTENSIONS = {"cue"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
 PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
@@ -175,6 +176,7 @@ SUPPORTED_EXTENSIONS = {
     *AUDIOBOOK_EXTENSIONS,
     *PODCAST_EPISODE_EXTENSIONS,
     *PLAYLIST_EXTENSIONS,
+    *CUE_EXTENSIONS,
 }
 
 
