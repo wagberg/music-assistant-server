@@ -68,6 +68,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.cue_sheet import CueSheet, parse_cue_sheet
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
@@ -1276,7 +1277,8 @@ class LocalFileSystemProvider(MusicProvider):
         for encoding in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
             try:
                 async with aiofiles.open(absolute_path, encoding=encoding) as f:
-                    return await f.read()
+                    content: str = await f.read()
+                    return content
             except (UnicodeDecodeError, ValueError):
                 continue
         msg = f"Unable to read CUE file with any supported encoding: {absolute_path}"
@@ -1512,26 +1514,74 @@ class LocalFileSystemProvider(MusicProvider):
             end_seconds = total_duration
         duration = end_seconds - start_seconds
 
+        # store original audio format info for get_audio_stream
+        original_format = AudioFormat(
+            content_type=ContentType.try_parse(
+                audio_path.rsplit(".", 1)[-1] if "." in audio_path else tags.format
+            ),
+            sample_rate=tags.sample_rate,
+            bit_depth=tags.bits_per_sample,
+            channels=tags.channels,
+            bit_rate=tags.bit_rate,
+        )
+
+        # output format: PCM since we use FFmpeg to extract the segment
+        output_format = AudioFormat(
+            content_type=ContentType.PCM_F32LE,
+            sample_rate=tags.sample_rate,
+            bit_depth=32,
+            channels=tags.channels,
+        )
+
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(
-                    audio_path.rsplit(".", 1)[-1] if "." in audio_path else tags.format
-                ),
-                sample_rate=tags.sample_rate,
-                bit_depth=tags.bits_per_sample,
-                channels=tags.channels,
-                bit_rate=tags.bit_rate,
-            ),
+            audio_format=output_format,
             media_type=MediaType.TRACK,
-            stream_type=StreamType.LOCAL_FILE,
+            stream_type=StreamType.CUSTOM,
             duration=int(duration),
-            path=audio_path,
-            can_seek=False,
-            allow_seek=False,
-            extra_input_args=["-ss", str(start_seconds), "-t", str(duration)],
+            can_seek=True,
+            allow_seek=True,
+            data={
+                "audio_path": audio_path,
+                "start_seconds": start_seconds,
+                "track_duration": duration,
+                "original_format": original_format.to_dict(),
+            },
         )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for a CUE-sheet-derived track.
+
+        :param streamdetails: The StreamDetails for this track.
+        :param seek_position: Position in seconds to seek to within the track.
+        """
+        if not streamdetails.data or "audio_path" not in streamdetails.data:
+            msg = f"Invalid CUE track stream details: {streamdetails.item_id}"
+            raise MediaNotFoundError(msg)
+
+        audio_path: str = streamdetails.data["audio_path"]
+        base_start: float = streamdetails.data["start_seconds"]
+        track_duration: float = streamdetails.data["track_duration"]
+        original_format = AudioFormat.from_dict(streamdetails.data["original_format"])
+
+        # calculate actual seek position within the full audio file
+        actual_seek = base_start + seek_position
+        # adjust duration to account for seeking within the track
+        remaining_duration = track_duration - seek_position
+
+        if remaining_duration <= 0:
+            return
+
+        async for chunk in get_ffmpeg_stream(
+            audio_input=audio_path,
+            input_format=original_format,
+            output_format=streamdetails.audio_format,  # PCM_F32LE
+            extra_input_args=["-ss", str(actual_seek), "-t", str(remaining_duration)],
+        ):
+            yield chunk
 
     async def _parse_audiobook(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
         """Parse Audiobook details from file tags.
