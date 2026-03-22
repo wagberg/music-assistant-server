@@ -1385,16 +1385,20 @@ class LocalFileSystemProvider(MusicProvider):
         sorted_tracks = sorted(cue_sheet.tracks, key=lambda t: t.start_position)
 
         # create album from audio file tags (hybrid approach)
+        # ensure album tag exists — _parse_album asserts on it
         audio_relative_path = get_relative_path(self.base_path, audio_path)
+        if not tags.album:
+            # audio file lacks album tag — use CUE metadata or directory name as fallback
+            tags.tags["album"] = (
+                cue_sheet.title
+                or os.path.basename(os.path.dirname(cue_item.relative_path))
+                or "Unknown Album"
+            )
         album = await self._parse_album(
             track_path=audio_relative_path,
             track_tags=tags,
             track_created_at=cue_item.created_at,
         )
-
-        # fall back to CUE metadata if audio file lacks album tags
-        if album and not album.name and cue_sheet.title:
-            album.name = cue_sheet.title
 
         # determine album artist from CUE if not in audio tags
         album_performer = cue_sheet.performer
