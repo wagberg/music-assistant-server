@@ -1,4 +1,5 @@
-"""CUE sheet parser for Music Assistant.
+"""
+CUE sheet parser for Music Assistant.
 
 Parses standard CUE sheet format into structured data.
 Supports PERFORMER, TITLE, FILE, TRACK, INDEX, ISRC, and REM commands.
@@ -36,7 +37,8 @@ class CueSheet:
 
 
 def _parse_timestamp(timestamp: str) -> float:
-    """Convert CUE timestamp (MM:SS:FF) to seconds.
+    """
+    Convert CUE timestamp (MM:SS:FF) to seconds.
 
     :param timestamp: CUE format timestamp where FF = frames at 75fps.
     """
@@ -56,7 +58,8 @@ def _unquote(value: str) -> str:
 
 
 def parse_cue_sheet(cue_content: str) -> CueSheet:
-    """Parse CUE sheet content into structured data.
+    """
+    Parse CUE sheet content into structured data.
 
     :param cue_content: The raw text content of a CUE sheet.
     """
@@ -122,7 +125,8 @@ def parse_cue_sheet(cue_content: str) -> CueSheet:
 
 
 def _parse_rem_line(line: str, sheet: CueSheet, current_track: CueTrack | None) -> None:
-    """Parse a REM line for metadata.
+    """
+    Parse a REM line for metadata.
 
     :param line: The full REM line.
     :param sheet: The CueSheet being built.

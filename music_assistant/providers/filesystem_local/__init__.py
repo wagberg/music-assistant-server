@@ -175,27 +175,29 @@ async def get_config_entries(
 
 
 def _register_cue_track_ids(cue_item: FileSystemItem, cur_filenames: set[str]) -> None:
-    """Register synthetic CUE track IDs in cur_filenames when CUE file is unchanged.
+    """
+    Register CUE track IDs in cur_filenames when CUE file is unchanged.
 
     :param cue_item: The CUE file's FileSystemItem.
     :param cur_filenames: Set of current filenames to update.
     """
     cue_path = cue_item.absolute_path
+    content: str | None = None
+    for encoding in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+        try:
+            with open(cue_path, encoding=encoding) as f:
+                content = f.read()
+            break
+        except (UnicodeDecodeError, ValueError):
+            continue
+    if content is None:
+        return
     try:
-        for encoding in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
-            try:
-                with open(cue_path, encoding=encoding) as f:
-                    content = f.read()
-                break
-            except (UnicodeDecodeError, ValueError):
-                continue
-        else:
-            return
         cue_data = parse_cue_sheet(content)
         for track in cue_data.tracks:
             track_id = f"{cue_item.relative_path}::track{track.number:02d}"
             cur_filenames.add(track_id)
-    except Exception:  # noqa: S110
+    except (OSError, ValueError):
         pass
 
 
@@ -310,7 +312,8 @@ class LocalFileSystemProvider(MusicProvider):
         return result
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
@@ -518,7 +521,8 @@ class LocalFileSystemProvider(MusicProvider):
         prev_checksum: str | None,
         cur_filenames: set[str] | None = None,
     ) -> bool:
-        """Process a single item asynchronously.
+        """
+        Process a single item asynchronously.
 
         :param item: The filesystem item to process.
         :param prev_checksum: Previous checksum from the database, or None for new items.
@@ -1271,7 +1275,8 @@ class LocalFileSystemProvider(MusicProvider):
     # --- CUE sheet support ---
 
     async def _read_cue_file(self, absolute_path: str) -> str:
-        """Read CUE file content with encoding fallback.
+        """
+        Read CUE file content with encoding fallback.
 
         :param absolute_path: Absolute path to the CUE file.
         """
@@ -1290,9 +1295,8 @@ class LocalFileSystemProvider(MusicProvider):
         cue_item: FileSystemItem,
         cue_sheet: CueSheet,
     ) -> str | None:
-        """Find the audio file referenced by a CUE sheet.
-
-        Tries in order: CUE FILE command path, same-name matching, single audio file in dir.
+        """
+        Find the audio file referenced by a CUE sheet.
 
         :param cue_item: The CUE file's FileSystemItem.
         :param cue_sheet: The parsed CUE sheet data.
@@ -1304,7 +1308,8 @@ class LocalFileSystemProvider(MusicProvider):
         cue_item: FileSystemItem,
         cue_sheet: CueSheet,
     ) -> str | None:
-        """Find the audio file referenced by a CUE sheet (sync version).
+        """
+        Find the audio file referenced by a CUE sheet (sync version).
 
         :param cue_item: The CUE file's FileSystemItem.
         :param cue_sheet: The parsed CUE sheet data.
@@ -1342,9 +1347,8 @@ class LocalFileSystemProvider(MusicProvider):
         return None
 
     async def _parse_cue_tracks(self, cue_item: FileSystemItem) -> list[Track]:
-        """Parse CUE sheet and return individual Track objects.
-
-        Uses hybrid metadata: timing from CUE sheet, album metadata from audio file tags.
+        """
+        Parse CUE sheet and return individual Track objects.
 
         :param cue_item: The CUE file's FileSystemItem.
         """
@@ -1391,9 +1395,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not tags.album:
             # audio file lacks album tag — use CUE metadata or directory name as fallback
             tags.tags["album"] = (
-                cue_sheet.title
-                or os.path.basename(os.path.dirname(cue_item.relative_path))
-                or "Unknown Album"
+                cue_sheet.title or Path(cue_item.relative_path).parent.name or "Unknown Album"
             )
         album = await self._parse_album(
             track_path=audio_relative_path,
@@ -1482,7 +1484,8 @@ class LocalFileSystemProvider(MusicProvider):
         return tracks
 
     async def _get_stream_details_for_cue_track(self, item_id: str) -> StreamDetails:
-        """Return the streamdetails for a CUE-sheet-derived track.
+        """
+        Return the streamdetails for a CUE-sheet-derived track.
 
         :param item_id: Track ID in format "path/to/file.cue::trackNN".
         """
@@ -1557,11 +1560,7 @@ class LocalFileSystemProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for a CUE-sheet-derived track.
-
-        :param streamdetails: The StreamDetails for this track.
-        :param seek_position: Position in seconds to seek to within the track.
-        """
+        """Return the custom audio stream for the provider item."""
         if not streamdetails.data or "audio_path" not in streamdetails.data:
             msg = f"Invalid CUE track stream details: {streamdetails.item_id}"
             raise MediaNotFoundError(msg)
