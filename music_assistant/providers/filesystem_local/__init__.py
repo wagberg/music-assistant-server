@@ -1442,8 +1442,8 @@ class LocalFileSystemProvider(MusicProvider):
                     )
                 },
                 track_number=cue_track.number,
-                disc_number=0,
-                duration=int(duration),
+                disc_number=1,
+                duration=round(duration),
                 date_added=(
                     datetime.fromtimestamp(cue_item.created_at, tz=UTC)
                     if cue_item.created_at
@@ -1546,7 +1546,7 @@ class LocalFileSystemProvider(MusicProvider):
             audio_format=output_format,
             media_type=MediaType.TRACK,
             stream_type=StreamType.CUSTOM,
-            duration=int(duration),
+            duration=round(duration),
             can_seek=True,
             allow_seek=True,
             data={
