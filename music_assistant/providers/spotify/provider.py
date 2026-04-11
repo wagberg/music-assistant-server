@@ -638,17 +638,122 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    @use_cache(86400 * 14)  # 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of 10 most popular tracks for the given artist."""
-        artist = await self.get_artist(prov_artist_id)
-        endpoint = f"artists/{prov_artist_id}/top-tracks"
-        items = await self._get_data(endpoint)
-        return [
-            parse_track(item, self, artist=artist)
-            for item in items["tracks"]
-            if (item and item["id"])
-        ]
+        """
+        Get all tracks for an artist by collecting tracks from all their albums.
+
+        For large discographies, returns initial results quickly and fetches
+        remaining albums in the background. Complete results are cached for 14 days;
+        partial results are cached for 20 minutes while background fetch completes.
+        """
+        cache_key = f"artist_toptracks.{prov_artist_id}"
+
+        if cached := await self.mass.cache.get(cache_key, provider=self.instance_id):
+            return [Track.from_dict(t) for t in cached]
+
+        albums = await self.get_artist_albums(prov_artist_id)
+        if not albums:
+            return []
+
+        initial_album_count = 5
+        seen_track_ids: set[str] = set()
+        seen_tracks: set[tuple[str, str, int]] = set()  # (name, version, duration_rounded)
+        result: list[Track] = []
+
+        for album in albums[:initial_album_count]:
+            album_tracks = await self.get_album_tracks(album.item_id)
+            for track in album_tracks:
+                if track.item_id in seen_track_ids:
+                    continue
+                # Deduplicate by name, version, and duration (within 2s tolerance)
+                track_key = (track.name.lower(), track.version.lower(), round(track.duration / 2))
+                if track_key in seen_tracks:
+                    continue
+                seen_track_ids.add(track.item_id)
+                seen_tracks.add(track_key)
+                track.album = album
+                if album.metadata.images:
+                    track.metadata.images = album.metadata.images
+                result.append(track)
+
+        remaining_albums = albums[initial_album_count:]
+        if remaining_albums:
+            await self.mass.cache.set(
+                cache_key,
+                [t.to_dict() for t in result],
+                provider=self.instance_id,
+                expiration=1200,
+            )
+            self.mass.create_task(
+                self._fetch_remaining_artist_tracks(
+                    prov_artist_id,
+                    cache_key,
+                    remaining_albums,
+                    result.copy(),
+                    seen_track_ids.copy(),
+                    seen_tracks.copy(),
+                )
+            )
+        else:
+            await self.mass.cache.set(
+                cache_key,
+                [t.to_dict() for t in result],
+                provider=self.instance_id,
+                expiration=86400 * 14,
+            )
+
+        return result
+
+    async def _fetch_remaining_artist_tracks(
+        self,
+        prov_artist_id: str,
+        cache_key: str,
+        remaining_albums: list[Album],
+        result: list[Track],
+        seen_track_ids: set[str],
+        seen_tracks: set[tuple[str, str, int]],
+    ) -> None:
+        """Fetch remaining album tracks in background and update cache when complete."""
+        self.logger.debug(
+            "Fetching remaining %d albums for artist %s in background",
+            len(remaining_albums),
+            prov_artist_id,
+        )
+
+        for album in remaining_albums:
+            try:
+                album_tracks = await self.get_album_tracks(album.item_id)
+                for track in album_tracks:
+                    if track.item_id in seen_track_ids:
+                        continue
+                    # Deduplicate by name, version, and duration (within 2s tolerance)
+                    track_key = (
+                        track.name.lower(),
+                        track.version.lower(),
+                        round(track.duration / 2),
+                    )
+                    if track_key in seen_tracks:
+                        continue
+                    seen_track_ids.add(track.item_id)
+                    seen_tracks.add(track_key)
+                    track.album = album
+                    if album.metadata.images:
+                        track.metadata.images = album.metadata.images
+                    result.append(track)
+            except Exception as err:
+                self.logger.warning("Error fetching tracks for album %s: %s", album.item_id, err)
+
+        await self.mass.cache.set(
+            cache_key,
+            [t.to_dict() for t in result],
+            provider=self.instance_id,
+            expiration=86400 * 14,
+        )
+        self.logger.debug(
+            "Completed fetching all tracks for artist %s (%d tracks total)",
+            prov_artist_id,
+            len(result),
+        )
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
