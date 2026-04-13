@@ -36,7 +36,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
 from nextory import NextoryClient
-from nextory.models import FormatType, LibraryListType, ProductResponse
+from nextory.models import FormatResponse, FormatState, FormatType, LibraryListType, ProductResponse
 
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.music_provider import MusicProvider
@@ -310,7 +310,7 @@ class NextoryProvider(MusicProvider):
         results = await self._client.search_books(search_query, per=limit, sort="relevance")
         audiobooks = []
         for product in results.products:
-            hls_format = next((f for f in product.formats if f.type == FormatType.HLS), None)
+            hls_format = self._get_hls_format(product)
             if hls_format:
                 audiobooks.append(self._parse_audiobook(product, hls_format.identifier))
         return SearchResults(audiobooks=audiobooks)
@@ -336,10 +336,7 @@ class NextoryProvider(MusicProvider):
                 continue
             items: list[Audiobook] = []
             for product in products.products:
-                hls = next(
-                    (f for f in product.formats if f.type == FormatType.HLS),
-                    None,
-                )
+                hls = self._get_hls_format(product)
                 if hls:
                     items.append(self._parse_audiobook(product, hls.identifier))
             if items:
@@ -420,7 +417,7 @@ class NextoryProvider(MusicProvider):
             )
         return folders
 
-    async def _browse_list(self, list_type: str) -> list[Audiobook]:
+    async def _browse_list(self, list_type: str, max_items: int = 200) -> list[Audiobook]:
         """Browse a library list by type."""
         libraries = await self._client.get_libraries()
         lst = next((x for x in libraries.lists if x.type == list_type), None)
@@ -433,10 +430,10 @@ class NextoryProvider(MusicProvider):
             if not result.products:
                 break
             for product in result.products:
-                hls_format = next((f for f in product.formats if f.type == FormatType.HLS), None)
+                hls_format = self._get_hls_format(product)
                 if hls_format:
                     results.append(self._parse_audiobook(product, hls_format.identifier))
-            if len(result.products) < 50:
+            if len(results) >= max_items or len(result.products) < 50:
                 break
             page += 1
         return results
@@ -509,7 +506,7 @@ class NextoryProvider(MusicProvider):
         )
         results: list[Audiobook | BrowseFolder] = []
         for product in products.products:
-            hls_format = next((f for f in product.formats if f.type == FormatType.HLS), None)
+            hls_format = self._get_hls_format(product)
             if hls_format:
                 results.append(self._parse_audiobook(product, hls_format.identifier))
         return results
@@ -519,7 +516,7 @@ class NextoryProvider(MusicProvider):
         products = await self._client.get_products_by_path("series", series_id, per=50)
         results: list[Audiobook] = []
         for product in products.products:
-            hls_format = next((f for f in product.formats if f.type == FormatType.HLS), None)
+            hls_format = self._get_hls_format(product)
             if hls_format:
                 results.append(self._parse_audiobook(product, hls_format.identifier))
         return results
@@ -541,7 +538,7 @@ class NextoryProvider(MusicProvider):
             if not result.products:
                 break
             for product in result.products:
-                hls_format = next((f for f in product.formats if f.type == FormatType.HLS), None)
+                hls_format = self._get_hls_format(product)
                 if hls_format:
                     yield self._parse_audiobook(product, hls_format.identifier)
             if len(result.products) < 50:
@@ -827,6 +824,18 @@ class NextoryProvider(MusicProvider):
             )
         except Exception:
             self.logger.exception("Failed to report playback position")
+
+    @staticmethod
+    def _get_hls_format(product: ProductResponse) -> FormatResponse | None:
+        """Get the active HLS format from a product, if available."""
+        return next(
+            (
+                f
+                for f in product.formats
+                if f.type == FormatType.HLS and f.state == FormatState.ACTIVE
+            ),
+            None,
+        )
 
     def _parse_audiobook(self, product: ProductResponse, format_id: int) -> Audiobook:
         """Parse Nextory product to Music Assistant Audiobook."""
