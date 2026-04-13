@@ -4,6 +4,7 @@
   "name": "Nextory",
   "description": "Stream audiobooks from Nextory.",
   "codeowners": [],
-  "requirements": [],
-  "documentation": "https://nextory.com"
+  "requirements": ["cryptography>=43.0.0"],
+  "documentation": "https://nextory.com",
+  "multi_instance": true
 }
