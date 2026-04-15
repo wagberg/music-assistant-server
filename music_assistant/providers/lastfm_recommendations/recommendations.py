@@ -60,7 +60,10 @@ class LastFMRecommendationManager:
         """Clear in-memory and persistent recommendation caches."""
         self._resolved_cache.clear()
 
-        await self.mass.cache.clear(category_filter=CACHE_CATEGORY_RESOLVED_ITEMS)
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider_filter=self.provider.instance_id,
+        )
 
         self.provider._recommendation_folders.clear()
         self.provider._recommendations_populated = False
@@ -161,6 +164,7 @@ class LastFMRecommendationManager:
         cached_artist = await self.mass.cache.get(
             key=persistent_cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
             base_class=Artist,
         )
         if isinstance(cached_artist, Artist):
@@ -174,6 +178,7 @@ class LastFMRecommendationManager:
                 persistent_cache_key,
                 artist.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
+                provider=self.provider.instance_id,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
         return artist
@@ -204,6 +209,7 @@ class LastFMRecommendationManager:
         cached_track = await self.mass.cache.get(
             key=persistent_cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
             base_class=Track,
         )
         if isinstance(cached_track, Track):
@@ -219,6 +225,7 @@ class LastFMRecommendationManager:
                 persistent_cache_key,
                 track.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
+                provider=self.provider.instance_id,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
         return track
@@ -249,6 +256,7 @@ class LastFMRecommendationManager:
         cached_album = await self.mass.cache.get(
             key=persistent_cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
             base_class=Album,
         )
         if isinstance(cached_album, Album):
@@ -262,6 +270,7 @@ class LastFMRecommendationManager:
                 persistent_cache_key,
                 album.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
+                provider=self.provider.instance_id,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
         return album

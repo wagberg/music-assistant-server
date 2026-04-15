@@ -182,13 +182,13 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_CACHE,
             type=ConfigEntryType.ACTION,
-            label="Clear Recommendation Cache",
+            label="Refresh Recommendations",
             description=(
-                "Clear all cached recommendations. "
-                "Use if a provider was removed or recommendations are stale."
+                "Rebuild recommendations immediately instead of waiting for the next "
+                "scheduled refresh."
             ),
             action=CONF_ACTION_CLEAR_CACHE,
-            action_label="Clear Cache",
+            action_label="Refresh Now",
             category="Recommendations",
             advanced=True,
             required=False,
