@@ -4,7 +4,10 @@
   "name": "Nextory",
   "description": "Stream audiobooks from Nextory.",
   "codeowners": [],
-  "requirements": ["cryptography>=43.0.0"],
+  "requirements": [
+    "nextory @ git+https://github.com/wagberg/nextory.git@v0.1.0",
+    "cryptography>=43.0.0"
+  ],
   "documentation": "https://nextory.com",
   "multi_instance": true
 }

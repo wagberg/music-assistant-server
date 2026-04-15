@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -20,7 +20,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -36,6 +36,12 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
 from nextory import NextoryClient
+from nextory.exceptions import (
+    ExpiredLoginTokenError,
+    InvalidAuthTokenError,
+    MaxProfileSessionsError,
+    NextoryApiError,
+)
 from nextory.models import FormatResponse, FormatState, FormatType, LibraryListType, ProductResponse
 
 from music_assistant.helpers.process import AsyncProcess
@@ -547,20 +553,23 @@ class NextoryProvider(MusicProvider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details."""
-        book_id, format_id = prov_audiobook_id.split("_")
-        product = await self._client.get_product_details(int(book_id))
-        audiobook = self._parse_audiobook(product, int(format_id))
-        audio_package = await self._client.get_audio_package(int(format_id))
-        audiobook.metadata.chapters = [
-            MediaItemChapter(
-                position=idx + 1,
-                name=f.title or f"Chapter {idx + 1}",
-                start=f.start_at / 1000,
-                end=f.end_at / 1000,
-            )
-            for idx, f in enumerate(audio_package.files)
-        ]
-        return audiobook
+        try:
+            book_id, format_id = prov_audiobook_id.split("_")
+            product = await self._client.get_product_details(int(book_id))
+            audiobook = self._parse_audiobook(product, int(format_id))
+            audio_package = await self._client.get_audio_package(int(format_id))
+            audiobook.metadata.chapters = [
+                MediaItemChapter(
+                    position=idx + 1,
+                    name=f.title or f"Chapter {idx + 1}",
+                    start=f.start_at / 1000,
+                    end=f.end_at / 1000,
+                )
+                for idx, f in enumerate(audio_package.files)
+            ]
+            return audiobook
+        except Exception as err:
+            self._handle_nextory_error(err)
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Get resume position for an audiobook.
@@ -824,6 +833,19 @@ class NextoryProvider(MusicProvider):
             )
         except Exception:
             self.logger.exception("Failed to report playback position")
+
+    @staticmethod
+    def _handle_nextory_error(err: Exception) -> NoReturn:
+        """Re-raise Nextory errors as MA-friendly exceptions."""
+        if isinstance(err, MaxProfileSessionsError):
+            raise ProviderUnavailableError(err.description or str(err)) from err
+        if isinstance(err, (ExpiredLoginTokenError, InvalidAuthTokenError)):
+            raise LoginFailed(err.description or str(err)) from err
+        if isinstance(err, NextoryApiError):
+            raise ProviderUnavailableError(err.description or str(err)) from err
+        if isinstance(err, TimeoutError):
+            raise ProviderUnavailableError("Nextory not responding.") from err
+        raise ProviderUnavailableError(f"Nextory error: {err}") from err
 
     @staticmethod
     def _get_hls_format(product: ProductResponse) -> FormatResponse | None:
