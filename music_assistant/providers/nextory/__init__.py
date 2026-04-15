@@ -263,6 +263,12 @@ class NextoryProvider(MusicProvider):
             profile = next((p for p in profiles.profiles if p.login_key == login_key), None)
             self._profile_id = profile.id if profile else profiles.profiles[0].id
             self._profile_name = profile.name if profile else None
+            self.logger.info(
+                "Logged in as %s (country: %s, language: %s)",
+                self._profile_name,
+                account.country,
+                language,
+            )
 
             self._ongoing_product_ids = set()
             self._ongoing_list_id = None
@@ -284,6 +290,7 @@ class NextoryProvider(MusicProvider):
                     if len(result.products) < 50:
                         break
                     page += 1
+                self.logger.info("Loaded %d ongoing books", len(self._ongoing_product_ids))
         except Exception:
             await self._client.close()
             raise
@@ -323,12 +330,29 @@ class NextoryProvider(MusicProvider):
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get personalized recommendations from Nextory home entries."""
+        folders: list[RecommendationFolder] = []
+
+        # Add "Continue Listening" from ongoing list
+        try:
+            ongoing = await self._browse_list("ongoing", max_items=10)
+            if ongoing:
+                folders.append(
+                    RecommendationFolder(
+                        item_id="ongoing",
+                        name="Continue Listening",
+                        provider=self.instance_id,
+                        items=UniqueList(ongoing),
+                    )
+                )
+        except Exception:
+            self.logger.debug("Failed to fetch ongoing list")
+
+        # Add personalized home entries
         try:
             entries = await self._client.get_home_entries(page=0, per=5)
         except Exception:
             self.logger.debug("Failed to fetch home entries")
-            return []
-        folders: list[RecommendationFolder] = []
+            return folders
         usable_types = {"selection", "top_picks", "popular"}
         for entry in entries.entries:
             if entry.type not in usable_types or not entry.selection:
@@ -431,18 +455,19 @@ class NextoryProvider(MusicProvider):
             return []
         results: list[Audiobook] = []
         page = 0
+        per = min(max_items, 50)
         while True:
-            result = await self._client.get_library(list_type, lst.id, page=page)
+            result = await self._client.get_library(list_type, lst.id, page=page, per=per)
             if not result.products:
                 break
             for product in result.products:
                 hls_format = self._get_hls_format(product)
                 if hls_format:
                     results.append(self._parse_audiobook(product, hls_format.identifier))
-            if len(results) >= max_items or len(result.products) < 50:
+            if len(results) >= max_items or len(result.products) < per:
                 break
             page += 1
-        return results
+        return results[:max_items]
 
     async def _browse_categories(self) -> list[BrowseFolder]:
         """Browse content categories (cached)."""
@@ -555,9 +580,18 @@ class NextoryProvider(MusicProvider):
         """Get full audiobook details."""
         try:
             book_id, format_id = prov_audiobook_id.split("_")
+            t0 = time.monotonic()
             product = await self._client.get_product_details(int(book_id))
-            audiobook = self._parse_audiobook(product, int(format_id))
+            t1 = time.monotonic()
             audio_package = await self._client.get_audio_package(int(format_id))
+            t2 = time.monotonic()
+            self.logger.debug(
+                "get_audiobook %s: product=%.1fs, audio_package=%.1fs",
+                prov_audiobook_id,
+                t1 - t0,
+                t2 - t1,
+            )
+            audiobook = self._parse_audiobook(product, int(format_id))
             audiobook.metadata.chapters = [
                 MediaItemChapter(
                     position=idx + 1,
@@ -614,6 +648,12 @@ class NextoryProvider(MusicProvider):
         """
         format_id = streamdetails.data["format_id"]
         audio_package = await self._client.get_audio_package(format_id)
+        self.logger.debug(
+            "Streaming format %d (%d files, seek=%ds)",
+            format_id,
+            len(audio_package.files),
+            seek_position,
+        )
         seek_ms = seek_position * 1000
         http = self.mass.http_session
 
@@ -656,8 +696,10 @@ class NextoryProvider(MusicProvider):
             ]
 
             self.logger.debug(
-                "Chapter %d: %d segments, offset=%.1fs (skip %d segs + %.1fs)",
-                idx,
+                "Chapter %d/%d '%s': %d segments, offset=%.1fs (skip %d segs + %.1fs)",
+                idx + 1,
+                len(audio_package.files),
+                chapter_file.title,
                 len(segments),
                 chapter_offset,
                 seg_start,
@@ -707,8 +749,10 @@ class NextoryProvider(MusicProvider):
                     yield chunk
 
             self.logger.debug(
-                "Chapter %d finished: %.1fs of expected %.1fs",
-                idx,
+                "Chapter %d/%d '%s' finished: %.1fs of expected %.1fs",
+                idx + 1,
+                len(audio_package.files),
+                chapter_file.title,
                 bytes_received / 176400,
                 (chapter_file.duration / 1000) - chapter_offset,
             )
@@ -799,6 +843,13 @@ class NextoryProvider(MusicProvider):
             book_id_str, format_id = prov_item_id.split("_")
             book_id = int(book_id_str)
             fmt_id = int(format_id)
+            self.logger.debug(
+                "on_played: book=%s format=%s pos=%d fully_played=%s",
+                book_id_str,
+                format_id,
+                position or 0,
+                fully_played,
+            )
             duration = (
                 media_item.duration
                 if hasattr(media_item, "duration") and media_item.duration
