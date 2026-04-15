@@ -71,6 +71,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
+    LOUDNESS_MEASUREMENT_MIN_LUFS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
@@ -113,7 +114,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 36
+DB_SCHEMA_VERSION: Final[int] = 37
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -1104,7 +1105,7 @@ class MusicController(CoreController):
         """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return
-        if loudness in (None, inf, -inf) or loudness <= -50:
+        if loudness in (None, inf, -inf) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
             # skip invalid or unreliable values (ebur128 reports -70 LUFS on near-silence)
             return
         # prefer domain for streaming providers as the catalog is the same across instances
@@ -2747,6 +2748,20 @@ class MusicController(CoreController):
                 f"  AND provider_domain = 'apple_music' "
                 f"  AND provider_item_id LIKE 'ra.%'"
                 f")"
+            )
+
+        if prev_version <= 36:
+            # purge unreliable loudness measurements persisted by earlier versions
+            # (ebur128 reports ~-70 LUFS on near-silence / early-cancelled streams,
+            # which caused huge gain corrections on subsequent plays)
+            await self._database.execute(
+                f"DELETE FROM {DB_TABLE_LOUDNESS_MEASUREMENTS} "
+                f"WHERE loudness <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
+            )
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_LOUDNESS_MEASUREMENTS} "
+                f"SET loudness_album = NULL "
+                f"WHERE loudness_album <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
             )
 
         # save changes
