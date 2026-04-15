@@ -2,7 +2,7 @@
   "type": "music",
   "domain": "nextory",
   "name": "Nextory",
-  "description": "Stream audiobooks from Nextory.",
+  "description": "Stream audiobooks from Nextory. Requires Music Assistant 2.7+.",
   "codeowners": [],
   "requirements": [
     "nextory @ git+https://github.com/wagberg/nextory.git@v0.1.0",
