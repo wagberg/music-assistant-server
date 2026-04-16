@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, NoReturn, cast
 
 import aiohttp
@@ -605,17 +606,21 @@ class NextoryProvider(MusicProvider):
         except Exception as err:
             self._handle_nextory_error(err)
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self,
+        item_id: str,
+        media_type: MediaType,
+    ) -> tuple[bool, int, datetime | None]:
         """Get resume position for an audiobook.
 
-        :returns: Tuple of (fully_played, elapsed_time_ms).
+        :returns: Tuple of (fully_played, elapsed_time_ms, reached_at).
         """
         _, format_id = item_id.split("_")
         pos = await self._client.get_position(int(format_id))
         if pos.elapsed_time is None:
-            return False, 0
+            return False, 0, None
         fully_played = pos.percentage is not None and pos.percentage >= 0.99
-        return fully_played, pos.elapsed_time
+        return fully_played, pos.elapsed_time, pos.reached_at
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for playback."""
@@ -699,7 +704,7 @@ class NextoryProvider(MusicProvider):
                 "Chapter %d/%d '%s': %d segments, offset=%.1fs (skip %d segs + %.1fs)",
                 idx + 1,
                 len(audio_package.files),
-                chapter_file.title,
+                chapter_file.title or chapter_file.idref,
                 len(segments),
                 chapter_offset,
                 seg_start,
@@ -752,7 +757,7 @@ class NextoryProvider(MusicProvider):
                 "Chapter %d/%d '%s' finished: %.1fs of expected %.1fs",
                 idx + 1,
                 len(audio_package.files),
-                chapter_file.title,
+                chapter_file.title or chapter_file.idref,
                 bytes_received / 176400,
                 (chapter_file.duration / 1000) - chapter_offset,
             )
