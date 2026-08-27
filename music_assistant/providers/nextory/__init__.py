@@ -647,9 +647,13 @@ class NextoryProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream by downloading and decrypting HLS segments.
 
-        ffmpeg's crypto+https handler has a bug at METHOD=NONE → AES-128
-        transitions, so we download/decrypt segments in Python and pipe
-        raw AAC to ffmpeg for transcoding only.
+        Nextory leaves every 6th segment unencrypted, so a chapter playlist toggles
+        between METHOD=NONE and AES-128 ~62 times. ffmpeg's native HLS demuxer reuses
+        its keep-alive HTTP connection across those transitions and corrupts the first
+        one or two encrypted segments after each one, silently discarding 17-37% of the
+        audio. We therefore download and decrypt segments here and pipe raw AAC to
+        ffmpeg for transcoding only. See STREAMING.md for the full diagnosis; the
+        ffmpeg-native alternative requires -http_persistent 0.
         """
         format_id = streamdetails.data["format_id"]
         audio_package = await self._client.get_audio_package(format_id)

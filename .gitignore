@@ -44,3 +44,8 @@ devenv.local.yaml
 
 # VS Code
 .vscode/launch.json
+
+# Streaming debug artifacts. May contain auth tokens (ffmpeg -headers output)
+# or presigned segment URLs (HLS playlists). See scripts/nextory_debug/README.md
+/playlist*.m3u8
+/stderr_*.txt

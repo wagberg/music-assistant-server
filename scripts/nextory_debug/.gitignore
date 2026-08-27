@@ -1,0 +1,15 @@
+# Generated debug artifacts. Never commit these.
+#
+# ffmpeg output captured with `-headers` embeds live X-Login-Token and
+# X-Profile-Token values, and Nextory media playlists contain presigned
+# nx-signature URLs. Both are credentials.
+_work_*/
+*.pcm
+*.aac
+*.m3u8
+*.log
+
+# Credential files, in case anyone drops one in here rather than ~/.config.
+creds.json
+profile.yaml
+profile.json
