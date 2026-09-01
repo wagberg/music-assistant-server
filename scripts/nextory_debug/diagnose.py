@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Live Nextory stream diagnostic. Requires credentials.
+"""
+Live Nextory stream diagnostic. Requires credentials.
 
 Credentials are read from disk by ``_common.load_creds`` and are never printed --
 only key names appear in output. See README.md.

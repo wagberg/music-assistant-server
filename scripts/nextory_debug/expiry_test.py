@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Simulate Nextory presigned-URL expiry mid-stream and observe ffmpeg's reaction.
+"""
+Simulate Nextory presigned-URL expiry mid-stream and observe ffmpeg's reaction.
 
 Serves a Nextory-shaped playlist (every 6th segment unencrypted, AES-128 otherwise)
 over HTTP/1.1. Segments at index >= EXPIRE_AT return HTTP 403, mimicking an
@@ -99,7 +100,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
-    def log_message(self, *a):
+    def log_message(self, *a) -> None:
         """Silence per-request logging."""
 
 

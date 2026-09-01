@@ -1,4 +1,5 @@
-"""Shared helpers for the Nextory streaming debug scripts.
+"""
+Shared helpers for the Nextory streaming debug scripts.
 
 Kept dependency-light and self-contained so each script can be run directly with
 the project venv:  .venv/bin/python scripts/nextory_debug/<script>.py
@@ -58,7 +59,8 @@ FFMPEG_HLS_ARGS = [
 
 
 def parse_adts(data: bytes) -> tuple[int, float, set[int], int]:
-    """Walk raw ADTS frames and derive an exact duration.
+    """
+    Walk raw ADTS frames and derive an exact duration.
 
     ffprobe's ``format=duration`` is a bitrate estimate on raw ADTS and can be
     several seconds out, so frame walking is the only reliable measurement.
@@ -89,7 +91,8 @@ def parse_adts(data: bytes) -> tuple[int, float, set[int], int]:
 def parse_media_playlist(
     text: str,
 ) -> tuple[list[tuple[str, bytes | None]], list[float], str | None]:
-    """Parse an HLS media playlist.
+    """
+    Parse an HLS media playlist.
 
     Tracks encryption state per segment: Nextory emits ``METHOD=NONE`` for every
     6th segment and ``METHOD=AES-128`` (with a per-segment IV) for the rest.
@@ -138,7 +141,8 @@ def _parse_flat(text: str) -> dict[str, str]:
 
 
 def load_creds(*, quiet: bool = False) -> dict[str, str]:
-    """Load Nextory credentials from disk, merging the known locations.
+    """
+    Load Nextory credentials from disk, merging the known locations.
 
     Only key *names* are ever printed, never values.
 
@@ -166,7 +170,8 @@ def load_creds(*, quiet: bool = False) -> dict[str, str]:
 
 
 async def make_client(creds: dict[str, str], session: aiohttp.ClientSession) -> Any:
-    """Build an authenticated NextoryClient, refreshing a stale profile token.
+    """
+    Build an authenticated NextoryClient, refreshing a stale profile token.
 
     Prefers stored tokens; falls back to username/password login, which consumes
     a profile session slot on the account.
@@ -200,7 +205,8 @@ async def make_client(creds: dict[str, str], session: aiohttp.ClientSession) -> 
 
 
 def auth_headers_arg(client: Any) -> str:
-    """Render the client's auth headers as an ffmpeg ``-headers`` value.
+    """
+    Render the client's auth headers as an ffmpeg ``-headers`` value.
 
     WARNING: contains live login/profile tokens. Never commit ffmpeg logs that
     include this value.
@@ -234,7 +240,8 @@ def media_playlist_url(master_url: str) -> str:
 def decode_duration(
     path_or_url: str, out_pcm: pathlib.Path, *, hls: bool, extra: list[str] | None = None
 ) -> tuple[float, str, int]:
-    """Decode an input to mono 44.1k s16le and return its duration in seconds.
+    """
+    Decode an input to mono 44.1k s16le and return its duration in seconds.
 
     ``-allowed_extensions`` is an HLS-demuxer option and errors on plain ADTS
     input, so it is only passed when ``hls`` is set.

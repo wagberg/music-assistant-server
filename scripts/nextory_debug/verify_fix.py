@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Verify that -http_persistent 0 fixes real Nextory chapters. Requires credentials.
+"""
+Verify that -http_persistent 0 fixes real Nextory chapters. Requires credentials.
 
 Runs ffmpeg's native HLS demuxer over a real chapter twice -- once with default
 options, once with ``-http_persistent 0`` -- and compares both against the chapter

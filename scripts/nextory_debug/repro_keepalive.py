@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Reproduce the ffmpeg encrypted-HLS audio-loss bug WITHOUT Nextory credentials.
+"""
+Reproduce the ffmpeg encrypted-HLS audio-loss bug WITHOUT Nextory credentials.
 
 Root cause
 ----------
@@ -122,7 +123,8 @@ def make_segments(work: pathlib.Path, n_seg: int, dur: int) -> list[pathlib.Path
 def build_playlist(
     work: pathlib.Path, segs: list[pathlib.Path], plain_every: int, *, over_http: bool
 ) -> tuple[pathlib.Path, pathlib.Path]:
-    """Write a Nextory-shaped playlist plus a plaintext reference.
+    """
+    Write a Nextory-shaped playlist plus a plaintext reference.
 
     :param plain_every: 0 => only segment 0 unencrypted; N => every Nth unencrypted.
     :param over_http: reference segments by http:// URL instead of file://.
