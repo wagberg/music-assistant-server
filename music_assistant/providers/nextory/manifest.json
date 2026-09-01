@@ -6,7 +6,7 @@
   "codeowners": ["@wagberg"],
   "stage": "beta",
   "requirements": [
-    "nextory @ git+https://github.com/wagberg/nextory.git@v0.1.0"
+    "nextory @ git+https://github.com/wagberg/nextory.git@a6ef69e"
   ],
   "documentation": "https://nextory.com",
   "multi_instance": true
