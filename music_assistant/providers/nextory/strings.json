@@ -1,0 +1,20 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "Email",
+      "description": "Your Nextory account email address."
+    },
+    "password": {
+      "label": "Password",
+      "description": "Your Nextory account password."
+    },
+    "login_key": {
+      "label": "Profile",
+      "description": "Which Nextory profile to use. Each profile counts separately against your subscription's concurrent-stream limit."
+    },
+    "language": {
+      "label": "Language",
+      "description": "Language used when requesting content from Nextory (categories, search results, and other localized metadata)."
+    }
+  }
+}
