@@ -45,6 +45,7 @@ from nextory.models import FormatResponse, FormatState, FormatType, LibraryListT
 
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.nextory.constants import (
     CONF_LANGUAGE,
     CONF_LOGIN_KEY,
@@ -78,7 +79,7 @@ async def setup(
     return NextoryProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-class NextoryProvider(MusicProvider):
+class NextoryProvider(RecommendationPayloadMixin, MusicProvider):
     """Nextory Music Provider."""
 
     _client: NextoryClient
@@ -166,6 +167,7 @@ class NextoryProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider."""
+        await super().unload(is_removed)
         await self._client.close()
 
     async def search(
@@ -182,58 +184,19 @@ class NextoryProvider(MusicProvider):
                 audiobooks.append(self._parse_audiobook(product, hls_format.identifier))
         return SearchResults(audiobooks=audiobooks)
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get personalized recommendations from Nextory home entries."""
-        folders: list[RecommendationFolder] = []
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Return personalized recommendation folders without items."""
+        return await self._recommendation_rows_from_payload()
 
-        # Add "Continue Listening" from ongoing list
-        try:
-            ongoing = await self._browse_list("ongoing", max_items=10)
-            if ongoing:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="ongoing",
-                        name="Continue Listening",
-                        translation_key="in_progress_items",
-                        provider=self.instance_id,
-                        items=UniqueList(ongoing),
-                    )
-                )
-        except Exception:
-            self.logger.debug("Failed to fetch ongoing list")
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items for a single recommendation folder.
 
-        # Add personalized home entries
-        try:
-            entries = await self._client.get_home_entries(page=0, per=5)
-        except Exception:
-            self.logger.debug("Failed to fetch home entries")
-            return folders
-        usable_types = {"selection", "top_picks", "popular"}
-        for entry in entries.entries:
-            if entry.type not in usable_types or not entry.selection:
-                continue
-            try:
-                products = await self._client.get_home_entry_products(
-                    entry.id,
-                    per=20,
-                )
-            except Exception:  # noqa: S112
-                continue
-            items: list[Audiobook] = []
-            for product in products.products:
-                hls = self._get_hls_format(product)
-                if hls:
-                    items.append(self._parse_audiobook(product, hls.identifier))
-            if items:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"home_{entry.id}",
-                        name=entry.selection.title,
-                        provider=self.instance_id,
-                        items=UniqueList(items),
-                    )
-                )
-        return folders
+        :param item_id: the item id of the recommendation row.
+        """
+        return await self._recommendation_items_from_payload(item_id)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -528,6 +491,59 @@ class NextoryProvider(MusicProvider):
             )
         except Exception:
             self.logger.exception("Failed to report playback position")
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch personalized recommendations from Nextory home entries, with items."""
+        folders: list[RecommendationFolder] = []
+
+        # Add "Continue Listening" from ongoing list
+        try:
+            ongoing = await self._browse_list("ongoing", max_items=10)
+            if ongoing:
+                folders.append(
+                    RecommendationFolder(
+                        item_id="ongoing",
+                        name="Continue Listening",
+                        translation_key="in_progress_items",
+                        provider=self.instance_id,
+                        items=UniqueList(ongoing),
+                    )
+                )
+        except Exception:
+            self.logger.debug("Failed to fetch ongoing list")
+
+        # Add personalized home entries
+        try:
+            entries = await self._client.get_home_entries(page=0, per=5)
+        except Exception:
+            self.logger.debug("Failed to fetch home entries")
+            return folders
+        usable_types = {"selection", "top_picks", "popular"}
+        for entry in entries.entries:
+            if entry.type not in usable_types or not entry.selection:
+                continue
+            try:
+                products = await self._client.get_home_entry_products(
+                    entry.id,
+                    per=20,
+                )
+            except Exception:  # noqa: S112
+                continue
+            items: list[Audiobook] = []
+            for product in products.products:
+                hls = self._get_hls_format(product)
+                if hls:
+                    items.append(self._parse_audiobook(product, hls.identifier))
+            if items:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"home_{entry.id}",
+                        name=entry.selection.title,
+                        provider=self.instance_id,
+                        items=UniqueList(items),
+                    )
+                )
+        return folders
 
     async def _browse_path(
         self,
