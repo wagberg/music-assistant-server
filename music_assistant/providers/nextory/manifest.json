@@ -3,10 +3,10 @@
   "domain": "nextory",
   "name": "Nextory",
   "description": "Stream audiobooks from Nextory. Requires Music Assistant 2.7+.",
-  "codeowners": [],
+  "codeowners": ["@wagberg"],
+  "stage": "beta",
   "requirements": [
-    "nextory @ git+https://github.com/wagberg/nextory.git@v0.1.0",
-    "cryptography>=43.0.0"
+    "nextory @ git+https://github.com/wagberg/nextory.git@v0.1.0"
   ],
   "documentation": "https://nextory.com",
   "multi_instance": true

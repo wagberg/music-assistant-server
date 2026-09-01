@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 from datetime import datetime
@@ -12,9 +11,7 @@ from typing import TYPE_CHECKING, NoReturn, cast
 import aiohttp
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -39,6 +36,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from nextory import NextoryClient
 from nextory.exceptions import (
     ExpiredLoginTokenError,
+    ExpiredProfileTokenError,
     InvalidAuthTokenError,
     MaxProfileSessionsError,
     NextoryApiError,
@@ -47,6 +45,12 @@ from nextory.models import FormatResponse, FormatState, FormatType, LibraryListT
 
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.nextory.constants import (
+    CONF_LANGUAGE,
+    CONF_LOGIN_KEY,
+    CONF_LOGIN_TOKEN,
+    CONF_PROFILE_TOKEN,
+)
 
 STREAM_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
@@ -58,15 +62,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-CONF_LOGIN_TOKEN = "login_token"
-CONF_LOGIN_KEY = "login_key"
-CONF_PROFILE_TOKEN = "profile_token"
-CONF_LANGUAGE = "language"
-CONF_ACTION_AUTH = "authenticate"
-CONF_ACTION_SELECT_PROFILE = "select_profile"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -83,148 +78,6 @@ async def setup(
     return NextoryProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    if values is None:
-        values = {}
-
-    login_token = cast("str | None", values.get(CONF_LOGIN_TOKEN))
-    profile_token = cast("str | None", values.get(CONF_PROFILE_TOKEN))
-
-    # Handle authentication action
-    if action == CONF_ACTION_AUTH:
-        username = cast("str", values.get(CONF_USERNAME, ""))
-        password = cast("str", values.get(CONF_PASSWORD, ""))
-        if not username or not password:
-            raise LoginFailed("Username and password are required")
-
-        async with NextoryClient() as client:
-            login_token = await client.login(username, password)
-            values[CONF_LOGIN_TOKEN] = login_token
-
-    # Build profile and language options after login
-    profile_options: list[ConfigValueOption] = []
-    language_options: list[ConfigValueOption] = []
-    default_language = "en"
-    if login_token and not profile_token:
-        async with NextoryClient(login_token=login_token) as client:
-            profiles_resp = await client.get_profiles()
-            for profile in profiles_resp.profiles:
-                profile_options.append(ConfigValueOption(profile.name, profile.login_key))
-
-            # Fetch account country and available languages
-            try:
-                lang_names = {
-                    "sv": "Svenska",
-                    "en": "English",
-                    "fi": "Suomi",
-                    "da": "Dansk",
-                    "nb": "Norsk",
-                    "de": "Deutsch",
-                    "nl": "Nederlands",
-                    "es": "Español",
-                    "fr": "Français",
-                    "it": "Italiano",
-                    "ar": "العربية",
-                }
-                account = await client.get_account()
-                text = await client._request("GET", f"{client._base_url}/user/v1.1/markets")
-                for m in json.loads(text):
-                    if m["country_code"] == account.country:
-                        default_language = m["primary_languages"][0]
-                        for lang in m["allowed_languages"]:
-                            label = lang_names.get(lang, lang)
-                            language_options.append(ConfigValueOption(label, lang))
-                        break
-            except Exception:  # noqa: S110
-                pass
-
-    # Handle profile selection action
-    login_key = cast("str | None", values.get(CONF_LOGIN_KEY))
-    if action == CONF_ACTION_SELECT_PROFILE and login_token and login_key and not profile_token:
-        async with NextoryClient(login_token=login_token) as client:
-            profile_token = await client.select_profile(login_key)
-            values[CONF_PROFILE_TOKEN] = profile_token
-
-    is_authenticated = bool(profile_token)
-    needs_profile = bool(login_token and not profile_token)
-
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="Username",
-            required=not is_authenticated and not needs_profile,
-            hidden=is_authenticated or needs_profile,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Password",
-            required=not is_authenticated and not needs_profile,
-            hidden=is_authenticated or needs_profile,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_AUTH,
-            type=ConfigEntryType.ACTION,
-            label="Authenticate",
-            action=CONF_ACTION_AUTH,
-            hidden=is_authenticated or needs_profile,
-        ),
-        ConfigEntry(
-            key=CONF_LOGIN_KEY,
-            type=ConfigEntryType.STRING,
-            label="Select Profile",
-            required=needs_profile,
-            hidden=not needs_profile,
-            options=profile_options if profile_options else [],
-            value=login_key,
-        ),
-        ConfigEntry(
-            key=CONF_LANGUAGE,
-            type=ConfigEntryType.STRING,
-            label="Language",
-            description="Language for content labels and categories",
-            required=needs_profile,
-            hidden=is_authenticated or not needs_profile,
-            options=language_options if language_options else [],
-            default_value=default_language,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_SELECT_PROFILE,
-            type=ConfigEntryType.ACTION,
-            label="Confirm Profile",
-            action=CONF_ACTION_SELECT_PROFILE,
-            hidden=not needs_profile,
-        ),
-        ConfigEntry(
-            key=CONF_LOGIN_TOKEN,
-            type=ConfigEntryType.STRING,
-            label="Login Token",
-            hidden=True,
-            value=login_token,
-        ),
-        ConfigEntry(
-            key=CONF_PROFILE_TOKEN,
-            type=ConfigEntryType.STRING,
-            label="Profile Token",
-            hidden=True,
-            value=profile_token,
-        ),
-    )
-
-
 class NextoryProvider(MusicProvider):
     """Nextory Music Provider."""
 
@@ -238,9 +91,9 @@ class NextoryProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization."""
-        login_token = cast("str", self.config.get_value(CONF_LOGIN_TOKEN))
-        profile_token = cast("str", self.config.get_value(CONF_PROFILE_TOKEN))
-        login_key = cast("str", self.config.get_value(CONF_LOGIN_KEY))
+        login_token = cast("str", self.get_setup_value(CONF_LOGIN_TOKEN))
+        profile_token = cast("str", self.get_setup_value(CONF_PROFILE_TOKEN))
+        login_key = cast("str", self.get_setup_value(CONF_LOGIN_KEY))
 
         if not login_token or not profile_token:
             raise LoginFailed("Not authenticated with Nextory")
@@ -256,7 +109,7 @@ class NextoryProvider(MusicProvider):
             # Get country from account, language from config
             account = await self._client.get_account()
             self._client.country = account.country
-            language = cast("str | None", self.config.get_value(CONF_LANGUAGE))
+            language = cast("str | None", self.get_setup_value(CONF_LANGUAGE))
             if language:
                 self._client._locale = f"{language}_{account.country}"
 
@@ -341,6 +194,7 @@ class NextoryProvider(MusicProvider):
                     RecommendationFolder(
                         item_id="ongoing",
                         name="Continue Listening",
+                        translation_key="in_progress_items",
                         provider=self.instance_id,
                         items=UniqueList(ongoing),
                     )
@@ -382,7 +236,8 @@ class NextoryProvider(MusicProvider):
         return folders
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         Structure:
           root/
@@ -402,6 +257,277 @@ class NextoryProvider(MusicProvider):
         except Exception:
             self.logger.debug("Browse failed for %s", item_path)
             return []
+
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
+        """Get audiobooks from the ongoing library."""
+        libraries = await self._client.get_libraries()
+        ongoing_list = next(
+            (lst for lst in libraries.lists if lst.type == LibraryListType.ONGOING), None
+        )
+        if not ongoing_list:
+            return
+
+        page = 0
+        while True:
+            result = await self._client.get_library(
+                LibraryListType.ONGOING, ongoing_list.id, page=page
+            )
+            if not result.products:
+                break
+            for product in result.products:
+                hls_format = self._get_hls_format(product)
+                if hls_format:
+                    yield self._parse_audiobook(product, hls_format.identifier)
+            if len(result.products) < 50:
+                break
+            page += 1
+
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details."""
+        try:
+            book_id, format_id = prov_audiobook_id.split("_")
+            t0 = time.monotonic()
+            product = await self._client.get_product_details(int(book_id))
+            t1 = time.monotonic()
+            audio_package = await self._client.get_audio_package(int(format_id))
+            t2 = time.monotonic()
+            self.logger.debug(
+                "get_audiobook %s: product=%.1fs, audio_package=%.1fs",
+                prov_audiobook_id,
+                t1 - t0,
+                t2 - t1,
+            )
+            audiobook = self._parse_audiobook(product, int(format_id))
+            audiobook.metadata.chapters = [
+                MediaItemChapter(
+                    position=idx + 1,
+                    name=f.title or f"Chapter {idx + 1}",
+                    start=f.start_at / 1000,
+                    end=f.end_at / 1000,
+                )
+                for idx, f in enumerate(audio_package.files)
+            ]
+            return audiobook
+        except Exception as err:
+            self._handle_nextory_error(err)
+
+    async def get_resume_position(
+        self,
+        item_id: str,
+        media_type: MediaType,
+    ) -> tuple[bool, int, datetime | None]:
+        """
+        Get resume position for an audiobook.
+
+        :returns: Tuple of (fully_played, elapsed_time_ms, reached_at).
+        """
+        _, format_id = item_id.split("_")
+        pos = await self._client.get_position(int(format_id))
+        if pos.elapsed_time is None:
+            return False, 0, None
+        fully_played = pos.percentage is not None and pos.percentage >= 0.99
+        return fully_played, pos.elapsed_time, pos.reached_at
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Get stream details for playback."""
+        _, format_id = item_id.split("_")
+        audio_package = await self._client.get_audio_package(int(format_id))
+
+        if not audio_package.files:
+            raise MediaNotFoundError(f"No audio files for {item_id}")
+
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+            media_type=MediaType.AUDIOBOOK,
+            stream_type=StreamType.CUSTOM,
+            duration=audio_package.duration // 1000,
+            can_seek=True,
+            allow_seek=True,
+            data={"format_id": int(format_id)},
+        )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio stream by downloading and decrypting HLS segments.
+
+        Nextory leaves every 6th segment unencrypted, so a chapter playlist toggles
+        between METHOD=NONE and AES-128 ~62 times. ffmpeg's native HLS demuxer reuses
+        its keep-alive HTTP connection across those transitions and corrupts the first
+        one or two encrypted segments after each one, silently discarding 17-37% of the
+        audio. We therefore download and decrypt segments here and pipe raw AAC to
+        ffmpeg for transcoding only. See STREAMING.md for the full diagnosis; the
+        ffmpeg-native alternative requires -http_persistent 0.
+        """
+        format_id = streamdetails.data["format_id"]
+        audio_package = await self._client.get_audio_package(format_id)
+        self.logger.debug(
+            "Streaming format %d (%d files, seek=%ds)",
+            format_id,
+            len(audio_package.files),
+            seek_position,
+        )
+        seek_ms = seek_position * 1000
+        http = self.mass.http_session
+
+        for idx, chapter_file in enumerate(audio_package.files):
+            chapter_end = chapter_file.start_at + chapter_file.duration
+            if seek_ms >= chapter_end:
+                continue
+
+            chapter_offset = max(0, (seek_ms - chapter_file.start_at) / 1000)
+
+            # Parse media playlist and fetch encryption key
+            playlist, key_bytes = await self._fetch_chapter_playlist(chapter_file.uri)
+            segments, seg_start, skip_secs = self._parse_playlist(playlist, chapter_offset)
+            if chapter_offset > 0:
+                seek_ms = 0
+
+            args = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-nostats",
+            ]
+            if skip_secs > 0:
+                args += ["-ss", str(skip_secs)]
+            args += [
+                "-f",
+                "aac",
+                "-i",
+                "pipe:0",
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                "-acodec",
+                "pcm_s16le",
+                "-f",
+                "s16le",
+                "-",
+            ]
+
+            self.logger.debug(
+                "Chapter %d/%d '%s': %d segments, offset=%.1fs (skip %d segs + %.1fs)",
+                idx + 1,
+                len(audio_package.files),
+                chapter_file.title or chapter_file.idref,
+                len(segments),
+                chapter_offset,
+                seg_start,
+                skip_secs,
+            )
+
+            async def _feed_stdin(
+                proc: AsyncProcess,
+                _seg_start: int = seg_start,
+                _chapter_uri: str = chapter_file.uri,
+            ) -> None:
+                """Download, decrypt, and feed segments to ffmpeg stdin."""
+                nonlocal segments, key_bytes
+                try:
+                    for seg_idx, (seg_url, iv) in enumerate(segments[_seg_start:], _seg_start):
+                        async with http.get(seg_url, timeout=STREAM_TIMEOUT) as resp:
+                            if resp.status == 403:
+                                self.logger.info("Segment URL expired, refreshing playlist")
+                                playlist_new, key_bytes = await self._fetch_chapter_playlist(
+                                    _chapter_uri
+                                )
+                                segments = self._parse_playlist(playlist_new)[0]
+                                async with http.get(
+                                    segments[seg_idx][0],
+                                    timeout=STREAM_TIMEOUT,
+                                ) as resp2:
+                                    data = await resp2.read()
+                            else:
+                                data = await resp.read()
+                        if iv is not None and key_bytes:
+                            dec = Cipher(algorithms.AES(key_bytes), modes.CBC(iv)).decryptor()
+                            decrypted = dec.update(data) + dec.finalize()
+                            unpadder = PKCS7(128).unpadder()
+                            data = unpadder.update(decrypted) + unpadder.finalize()
+                        await proc.write(data)
+                except Exception:
+                    self.logger.exception("Error feeding segments")
+                finally:
+                    await proc.write_eof()
+
+            bytes_received = 0
+            async with AsyncProcess(args, stdin=True, stdout=True, stderr=False) as proc:
+                feed_task = asyncio.create_task(_feed_stdin(proc))
+                proc.attach_stderr_reader(feed_task)
+                async for chunk in proc.iter_any():
+                    bytes_received += len(chunk)
+                    yield chunk
+
+            self.logger.debug(
+                "Chapter %d/%d '%s' finished: %.1fs of expected %.1fs",
+                idx + 1,
+                len(audio_package.files),
+                chapter_file.title or chapter_file.idref,
+                bytes_received / 176400,
+                (chapter_file.duration / 1000) - chapter_offset,
+            )
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Report playback position back to Nextory."""
+        try:
+            book_id_str, format_id = prov_item_id.split("_")
+            book_id = int(book_id_str)
+            fmt_id = int(format_id)
+            self.logger.debug(
+                "on_played: book=%s format=%s pos=%d fully_played=%s",
+                book_id_str,
+                format_id,
+                position or 0,
+                fully_played,
+            )
+            duration = (
+                media_item.duration
+                if hasattr(media_item, "duration") and media_item.duration
+                else 1
+            )
+            position = position or 0
+
+            # Mark unplayed: position=0 and not fully_played
+            if position == 0 and not fully_played:
+                if self._ongoing_list_id and book_id in self._ongoing_product_ids:
+                    await self._client.remove_from_library(book_id, self._ongoing_list_id)
+                    self._ongoing_product_ids.discard(book_id)
+                return
+
+            percentage = 1.0 if fully_played else round(min(1.0, position / duration), 4)
+            elapsed_ms = position * 1000
+
+            if self._ongoing_list_id and book_id not in self._ongoing_product_ids:
+                await self._client.add_to_list(book_id, self._ongoing_list_id)
+                self._ongoing_product_ids.add(book_id)
+
+            if fully_played and self._ongoing_list_id and book_id in self._ongoing_product_ids:
+                await self._client.remove_from_library(book_id, self._ongoing_list_id)
+                self._ongoing_product_ids.discard(book_id)
+                await self._client.mark_completed(book_id)
+
+            await self._client.patch_position(
+                profile_id=self._profile_id,
+                format_id=fmt_id,
+                percentage=percentage,
+                elapsed_time=elapsed_ms,
+            )
+        except Exception:
+            self.logger.exception("Failed to report playback position")
 
     async def _browse_path(
         self,
@@ -553,221 +679,9 @@ class NextoryProvider(MusicProvider):
                 results.append(self._parse_audiobook(product, hls_format.identifier))
         return results
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
-        """Get audiobooks from the ongoing library."""
-        libraries = await self._client.get_libraries()
-        ongoing_list = next(
-            (lst for lst in libraries.lists if lst.type == LibraryListType.ONGOING), None
-        )
-        if not ongoing_list:
-            return
-
-        page = 0
-        while True:
-            result = await self._client.get_library(
-                LibraryListType.ONGOING, ongoing_list.id, page=page
-            )
-            if not result.products:
-                break
-            for product in result.products:
-                hls_format = self._get_hls_format(product)
-                if hls_format:
-                    yield self._parse_audiobook(product, hls_format.identifier)
-            if len(result.products) < 50:
-                break
-            page += 1
-
-    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get full audiobook details."""
-        try:
-            book_id, format_id = prov_audiobook_id.split("_")
-            t0 = time.monotonic()
-            product = await self._client.get_product_details(int(book_id))
-            t1 = time.monotonic()
-            audio_package = await self._client.get_audio_package(int(format_id))
-            t2 = time.monotonic()
-            self.logger.debug(
-                "get_audiobook %s: product=%.1fs, audio_package=%.1fs",
-                prov_audiobook_id,
-                t1 - t0,
-                t2 - t1,
-            )
-            audiobook = self._parse_audiobook(product, int(format_id))
-            audiobook.metadata.chapters = [
-                MediaItemChapter(
-                    position=idx + 1,
-                    name=f.title or f"Chapter {idx + 1}",
-                    start=f.start_at / 1000,
-                    end=f.end_at / 1000,
-                )
-                for idx, f in enumerate(audio_package.files)
-            ]
-            return audiobook
-        except Exception as err:
-            self._handle_nextory_error(err)
-
-    async def get_resume_position(
-        self,
-        item_id: str,
-        media_type: MediaType,
-    ) -> tuple[bool, int, datetime | None]:
-        """Get resume position for an audiobook.
-
-        :returns: Tuple of (fully_played, elapsed_time_ms, reached_at).
-        """
-        _, format_id = item_id.split("_")
-        pos = await self._client.get_position(int(format_id))
-        if pos.elapsed_time is None:
-            return False, 0, None
-        fully_played = pos.percentage is not None and pos.percentage >= 0.99
-        return fully_played, pos.elapsed_time, pos.reached_at
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get stream details for playback."""
-        _, format_id = item_id.split("_")
-        audio_package = await self._client.get_audio_package(int(format_id))
-
-        if not audio_package.files:
-            raise MediaNotFoundError(f"No audio files for {item_id}")
-
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
-            audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
-            media_type=MediaType.AUDIOBOOK,
-            stream_type=StreamType.CUSTOM,
-            duration=audio_package.duration // 1000,
-            can_seek=True,
-            allow_seek=True,
-            data={"format_id": int(format_id)},
-        )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream by downloading and decrypting HLS segments.
-
-        Nextory leaves every 6th segment unencrypted, so a chapter playlist toggles
-        between METHOD=NONE and AES-128 ~62 times. ffmpeg's native HLS demuxer reuses
-        its keep-alive HTTP connection across those transitions and corrupts the first
-        one or two encrypted segments after each one, silently discarding 17-37% of the
-        audio. We therefore download and decrypt segments here and pipe raw AAC to
-        ffmpeg for transcoding only. See STREAMING.md for the full diagnosis; the
-        ffmpeg-native alternative requires -http_persistent 0.
-        """
-        format_id = streamdetails.data["format_id"]
-        audio_package = await self._client.get_audio_package(format_id)
-        self.logger.debug(
-            "Streaming format %d (%d files, seek=%ds)",
-            format_id,
-            len(audio_package.files),
-            seek_position,
-        )
-        seek_ms = seek_position * 1000
-        http = self.mass.http_session
-
-        for idx, chapter_file in enumerate(audio_package.files):
-            chapter_end = chapter_file.start_at + chapter_file.duration
-            if seek_ms >= chapter_end:
-                continue
-
-            chapter_offset = max(0, (seek_ms - chapter_file.start_at) / 1000)
-
-            # Parse media playlist and fetch encryption key
-            playlist, key_bytes = await self._fetch_chapter_playlist(chapter_file.uri)
-            segments, seg_start, skip_secs = self._parse_playlist(playlist, chapter_offset)
-            if chapter_offset > 0:
-                seek_ms = 0
-
-            args = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-nostats",
-            ]
-            if skip_secs > 0:
-                args += ["-ss", str(skip_secs)]
-            args += [
-                "-f",
-                "aac",
-                "-i",
-                "pipe:0",
-                "-ac",
-                "2",
-                "-ar",
-                "44100",
-                "-acodec",
-                "pcm_s16le",
-                "-f",
-                "s16le",
-                "-",
-            ]
-
-            self.logger.debug(
-                "Chapter %d/%d '%s': %d segments, offset=%.1fs (skip %d segs + %.1fs)",
-                idx + 1,
-                len(audio_package.files),
-                chapter_file.title or chapter_file.idref,
-                len(segments),
-                chapter_offset,
-                seg_start,
-                skip_secs,
-            )
-
-            async def _feed_stdin(
-                proc: AsyncProcess,
-                _seg_start: int = seg_start,
-                _chapter_uri: str = chapter_file.uri,
-            ) -> None:
-                """Download, decrypt, and feed segments to ffmpeg stdin."""
-                nonlocal segments, key_bytes
-                try:
-                    for seg_idx, (seg_url, iv) in enumerate(segments[_seg_start:], _seg_start):
-                        async with http.get(seg_url, timeout=STREAM_TIMEOUT) as resp:
-                            if resp.status == 403:
-                                self.logger.info("Segment URL expired, refreshing playlist")
-                                playlist_new, key_bytes = await self._fetch_chapter_playlist(
-                                    _chapter_uri
-                                )
-                                segments = self._parse_playlist(playlist_new)[0]
-                                async with http.get(
-                                    segments[seg_idx][0],
-                                    timeout=STREAM_TIMEOUT,
-                                ) as resp2:
-                                    data = await resp2.read()
-                            else:
-                                data = await resp.read()
-                        if iv is not None and key_bytes:
-                            dec = Cipher(algorithms.AES(key_bytes), modes.CBC(iv)).decryptor()
-                            decrypted = dec.update(data) + dec.finalize()
-                            unpadder = PKCS7(128).unpadder()
-                            data = unpadder.update(decrypted) + unpadder.finalize()
-                        await proc.write(data)
-                except Exception:
-                    self.logger.exception("Error feeding segments")
-                finally:
-                    await proc.write_eof()
-
-            bytes_received = 0
-            async with AsyncProcess(args, stdin=True, stdout=True, stderr=False) as proc:
-                feed_task = asyncio.create_task(_feed_stdin(proc))
-                proc.attach_stderr_reader(feed_task)
-                async for chunk in proc.iter_any():
-                    bytes_received += len(chunk)
-                    yield chunk
-
-            self.logger.debug(
-                "Chapter %d/%d '%s' finished: %.1fs of expected %.1fs",
-                idx + 1,
-                len(audio_package.files),
-                chapter_file.title or chapter_file.idref,
-                bytes_received / 176400,
-                (chapter_file.duration / 1000) - chapter_offset,
-            )
-
     async def _fetch_chapter_playlist(self, master_url: str) -> tuple[str, bytes | None]:
-        """Fetch media playlist and encryption key for a chapter.
+        """
+        Fetch media playlist and encryption key for a chapter.
 
         Retries once on auth failure by refreshing the profile token.
 
@@ -799,7 +713,8 @@ class NextoryProvider(MusicProvider):
     def _parse_playlist(
         playlist: str, offset: float = 0
     ) -> tuple[list[tuple[str, bytes | None]], int, float]:
-        """Parse HLS playlist into segments and calculate seek position.
+        """
+        Parse HLS playlist into segments and calculate seek position.
 
         :param playlist: HLS playlist text.
         :param offset: Seek offset in seconds within the chapter.
@@ -838,67 +753,21 @@ class NextoryProvider(MusicProvider):
             seg_start = len(segments)
         return segments, seg_start, skip_secs
 
-    async def on_played(
-        self,
-        media_type: MediaType,
-        prov_item_id: str,
-        fully_played: bool,
-        position: int,
-        media_item: MediaItemType,
-        is_playing: bool = False,
-    ) -> None:
-        """Report playback position back to Nextory."""
-        try:
-            book_id_str, format_id = prov_item_id.split("_")
-            book_id = int(book_id_str)
-            fmt_id = int(format_id)
-            self.logger.debug(
-                "on_played: book=%s format=%s pos=%d fully_played=%s",
-                book_id_str,
-                format_id,
-                position or 0,
-                fully_played,
-            )
-            duration = (
-                media_item.duration
-                if hasattr(media_item, "duration") and media_item.duration
-                else 1
-            )
-            position = position or 0
-
-            # Mark unplayed: position=0 and not fully_played
-            if position == 0 and not fully_played:
-                if self._ongoing_list_id and book_id in self._ongoing_product_ids:
-                    await self._client.remove_from_library(book_id, self._ongoing_list_id)
-                    self._ongoing_product_ids.discard(book_id)
-                return
-
-            percentage = 1.0 if fully_played else round(min(1.0, position / duration), 4)
-            elapsed_ms = position * 1000
-
-            if self._ongoing_list_id and book_id not in self._ongoing_product_ids:
-                await self._client.add_to_list(book_id, self._ongoing_list_id)
-                self._ongoing_product_ids.add(book_id)
-
-            if fully_played and self._ongoing_list_id and book_id in self._ongoing_product_ids:
-                await self._client.remove_from_library(book_id, self._ongoing_list_id)
-                self._ongoing_product_ids.discard(book_id)
-                await self._client.mark_completed(book_id)
-
-            await self._client.patch_position(
-                profile_id=self._profile_id,
-                format_id=fmt_id,
-                percentage=percentage,
-                elapsed_time=elapsed_ms,
-            )
-        except Exception:
-            self.logger.exception("Failed to report playback position")
-
     @staticmethod
     def _handle_nextory_error(err: Exception) -> NoReturn:
         """Re-raise Nextory errors as MA-friendly exceptions."""
         if isinstance(err, MaxProfileSessionsError):
-            raise ProviderUnavailableError(err.description or str(err)) from err
+            # The account's concurrent-stream tier is already in use by other profiles.
+            raise ProviderUnavailableError(
+                f"Nextory concurrent stream limit reached: {err.description or err}"
+            ) from err
+        if isinstance(err, ExpiredProfileTokenError):
+            # The client already retries once on this (client.py's own 401 handling);
+            # a second failure means the profile was taken again immediately, e.g. by
+            # another profile logging in right after our refresh.
+            raise ProviderUnavailableError(
+                f"Nextory profile session was taken by another device: {err.description or err}"
+            ) from err
         if isinstance(err, (ExpiredLoginTokenError, InvalidAuthTokenError)):
             raise LoginFailed(err.description or str(err)) from err
         if isinstance(err, NextoryApiError):
