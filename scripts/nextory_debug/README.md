@@ -107,7 +107,9 @@ profile_token: "..."
 Prefer the token form. A fresh username/password login consumes a **profile session
 slot** on the account (the client raises `MaxProfileSessionsError` when exhausted),
 which can disturb a running MA instance. A stale `profile_token` is refreshed
-automatically when `login_key` is present.
+automatically when `login_key` is present. Full detail on the concurrent-stream/eviction
+model and how it interacts with a running provider:
+[`music_assistant/providers/nextory/SESSION_HANDLING.md`](../../music_assistant/providers/nextory/SESSION_HANDLING.md).
 
 ## Why measurements use ADTS frame walking
 

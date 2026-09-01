@@ -1,5 +1,10 @@
 # Nextory Streaming Architecture
 
+For provider orientation (file layout, setup flow, supported features) see
+[`ARCHITECTURE.md`](ARCHITECTURE.md). For how `profile_token` staleness and eviction interact
+with playback specifically (as opposed to the ffmpeg-recovery analysis below) see
+[`SESSION_HANDLING.md`](SESSION_HANDLING.md).
+
 ## HLS Structure
 
 Each audiobook has multiple chapters. Each chapter is an HLS stream:
@@ -288,6 +293,10 @@ Measured with `scripts/nextory_debug/expiry_test.py`, which serves a Nextory-sha
 playlist and returns HTTP 403 for segments past a cutoff.
 
 ### Profile token expiry — recoverable, no gap
+
+(General mechanism — why segment delivery is unaffected by token staleness at all — is in
+[`SESSION_HANDLING.md`](SESSION_HANDLING.md). This section is the ffmpeg-native-path-specific
+measurement confirming that holds true for a real chapter, plus the mitigation it implies.)
 
 In the real 369-segment chapter, ffmpeg made exactly **1 key fetch and 1 playlist
 fetch**. Everything needing auth happens at process start; segments are presigned
