@@ -61,7 +61,7 @@ refresh does so.
 
 | `nextory` exception | MA exception raised | MA's `load_provider` auto-retries on this? |
 |---|---|---|
-| `ExpiredLoginTokenError`, `InvalidAuthTokenError` | `LoginFailed` | **No** — `mass.py` explicitly excludes `LoginFailed` from its retry-on-load-failure logic; the instance sits failed until the user reconfigures. |
+| `ExpiredLoginTokenError`, `InvalidAuthTokenError` (only reachable if signing in again with the stored credentials fails too, or the instance predates storing them) | `LoginFailed` | **No** — `mass.py` explicitly excludes `LoginFailed` from its retry-on-load-failure logic; the instance sits failed until the user reconfigures. |
 | `MaxProfileSessionsError` | `ProviderUnavailableError` ("Nextory concurrent stream limit reached: ...") | **Yes** — see below. |
 | `ExpiredProfileTokenError` (only reachable if it recurs immediately *after* the client's own built-in retry) | `ProviderUnavailableError` ("Nextory profile session was taken by another device: ...") | **Yes** — see below. |
 | Any other `NextoryApiError` | `ProviderUnavailableError` | Yes. |
@@ -76,9 +76,18 @@ other profiles already hold both/all concurrent-stream slots, `handle_async_init
 `profile_token`) every 2 minutes until a slot frees up. This is not currently tuned specifically
 for this scenario — it's Music Assistant's generic provider-load retry behavior, applied here.
 
-**Known related gap** (documented in the client library, repeated here because it changes MA's
-retry behavior specifically): `_refresh_profile_token()` in the `nextory` client can raise a bare
-`ValueError` instead of a typed `NextoryApiError` if the refresh call itself fails oddly. A bare
-`ValueError` is not a `MusicAssistantError`, so it does **not** qualify for the 120-second retry
-above — that failure mode gives up immediately instead of retrying, unlike the "normal"
-`MaxProfileSessionsError` case.
+**Device id**: Nextory binds both tokens to the `X-Device-Id` they were issued on; sending them
+with another device id fails with 2001 ("Login token is invalid or unable to decode") even for a
+token issued seconds earlier. The setup flow generates one device id per instance
+(`nextory.helpers.generate_device_id()`), uses it for login and profile selection, and stores it in
+`setup_data` so the provider keeps sending it. A unique id per instance also keeps several profiles
+of one account from evicting each other. Instances set up before the id was stored fall back to the
+client's default id, which is what their tokens were issued on.
+
+**Login token rejection (2001)**: Nextory can reject the stored `login_token` itself
+(`LoginTokenExpired`, "Login token is invalid or unable to decode"), e.g. after a password change.
+The setup flow therefore stores the username and password (encrypted, in `setup_data`) and passes
+them to `NextoryClient`, which signs in again on 2001, re-authorizes the profile and retries. The
+renewed tokens are written back to `setup_data` via the client's `on_tokens_updated` callback.
+Instances set up before credentials were stored have none, so they still fail with `LoginFailed`
+until reconfigured once.

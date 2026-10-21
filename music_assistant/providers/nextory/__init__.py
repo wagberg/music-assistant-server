@@ -47,10 +47,13 @@ from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.nextory.constants import (
+    CONF_DEVICE_ID,
     CONF_LANGUAGE,
     CONF_LOGIN_KEY,
     CONF_LOGIN_TOKEN,
+    CONF_PASSWORD,
     CONF_PROFILE_TOKEN,
+    CONF_USERNAME,
 )
 
 STREAM_TIMEOUT = aiohttp.ClientTimeout(total=30)
@@ -95,6 +98,13 @@ class NextoryProvider(RecommendationPayloadMixin, MusicProvider):
         login_token = cast("str", self.get_setup_value(CONF_LOGIN_TOKEN))
         profile_token = cast("str", self.get_setup_value(CONF_PROFILE_TOKEN))
         login_key = cast("str", self.get_setup_value(CONF_LOGIN_KEY))
+        # Credentials let the client sign in again when Nextory rejects the login token
+        # (2001); instances set up before they were stored lack them until reconfigured.
+        username = cast("str | None", self.get_setup_value(CONF_USERNAME))
+        password = cast("str | None", self.get_setup_value(CONF_PASSWORD))
+        # Tokens only work with the device id they were issued on. Instances set up
+        # before it was stored got theirs on the client's default id, which None selects.
+        device_id = cast("str | None", self.get_setup_value(CONF_DEVICE_ID))
 
         if not login_token or not profile_token:
             raise LoginFailed("Not authenticated with Nextory")
@@ -103,7 +113,11 @@ class NextoryProvider(RecommendationPayloadMixin, MusicProvider):
             login_token=login_token,
             login_key=login_key,
             profile_token=profile_token,
+            username=username,
+            password=password,
+            device_id=device_id,
             session=self.mass.http_session,
+            on_tokens_updated=self._on_tokens_updated,
         )
 
         try:
@@ -149,6 +163,14 @@ class NextoryProvider(RecommendationPayloadMixin, MusicProvider):
         except Exception:
             await self._client.close()
             raise
+
+    def _on_tokens_updated(self, login_token: str | None, profile_token: str | None) -> None:
+        """Persist tokens the client refreshed so a restart starts from valid ones."""
+        if login_token and login_token != self.get_setup_value(CONF_LOGIN_TOKEN):
+            self.logger.info("Nextory login token renewed")
+            self._update_setup_data(CONF_LOGIN_TOKEN, login_token)
+        if profile_token:
+            self._update_setup_data(CONF_PROFILE_TOKEN, profile_token, immediate=False)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -710,7 +732,9 @@ class NextoryProvider(RecommendationPayloadMixin, MusicProvider):
             headers = self._client.auth_headers
             async with http.get(media_url, headers=headers) as resp:
                 playlist = await resp.text()
-            if '"error"' in playlist[:50] and '"code":2002' in playlist:
+            if '"error"' in playlist[:50] and re.search(r'"code":200[12]\b', playlist):
+                # 2002: profile token expired; 2001: login token rejected. The client's
+                # refresh signs in again on 2001 when it has credentials.
                 if attempt == 0 and self._client.login_key:
                     self.logger.info("Profile token expired during streaming, refreshing")
                     await self._client._refresh_profile_token()

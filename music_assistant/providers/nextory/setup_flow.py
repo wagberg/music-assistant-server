@@ -9,9 +9,11 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from nextory import NextoryClient
 from nextory.exceptions import NextoryApiError
+from nextory.helpers import generate_device_id
 
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.nextory.constants import (
+    CONF_DEVICE_ID,
     CONF_LANGUAGE,
     CONF_LOGIN_KEY,
     CONF_LOGIN_TOKEN,
@@ -46,27 +48,33 @@ _LOGIN_ENTRIES = [
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: log in, pick a profile and language, then finish."""
-    login_token = await _login_step(session)
-    await _profile_step(session, login_token)
+    # Nextory binds tokens to the device id they were issued on, so one id is used for
+    # login, profile selection and every request the provider makes afterwards. A
+    # unique id per instance also keeps profiles of one account from evicting each other.
+    device_id = generate_device_id()
+    login_token, username, password = await _login_step(session, device_id)
+    await _profile_step(session, device_id, login_token, username, password)
 
 
-async def _login_step(session: SetupSession) -> str:
-    """Collect credentials and return a Nextory login token."""
+async def _login_step(session: SetupSession, device_id: str) -> tuple[str, str, str]:
+    """Collect credentials and return a Nextory login token with the credentials."""
     errors: dict[str, str] | None = None
     while True:
         submitted = await session.form(_LOGIN_ENTRIES, step_id="user", errors=errors)
         username = cast("str", submitted[CONF_USERNAME])
         password = cast("str", submitted[CONF_PASSWORD])
-        async with NextoryClient() as client:
+        async with NextoryClient(device_id=device_id) as client:
             try:
-                return cast("str", await client.login(username, password))
+                return cast("str", await client.login(username, password)), username, password
             except NextoryApiError as err:
                 errors = {"base": err.description or str(err)}
 
 
-async def _profile_step(session: SetupSession, login_token: str) -> None:
+async def _profile_step(
+    session: SetupSession, device_id: str, login_token: str, username: str, password: str
+) -> None:
     """Collect the profile/language selection and finish the flow."""
-    async with NextoryClient(login_token=login_token) as client:
+    async with NextoryClient(login_token=login_token, device_id=device_id) as client:
         profiles = await client.get_profiles()
         language_options, default_language = await _fetch_languages(client)
 
@@ -94,7 +102,7 @@ async def _profile_step(session: SetupSession, login_token: str) -> None:
         submitted = await session.form(entries, step_id="profile", errors=errors, last_step=True)
         login_key = cast("str", submitted[CONF_LOGIN_KEY])
         language = cast("str", submitted[CONF_LANGUAGE])
-        async with NextoryClient(login_token=login_token) as client:
+        async with NextoryClient(login_token=login_token, device_id=device_id) as client:
             try:
                 profile_token = await client.select_profile(login_key)
             except NextoryApiError as err:
@@ -107,6 +115,10 @@ async def _profile_step(session: SetupSession, login_token: str) -> None:
                     CONF_LOGIN_KEY: login_key,
                     CONF_PROFILE_TOKEN: profile_token,
                     CONF_LANGUAGE: language,
+                    CONF_DEVICE_ID: device_id,
+                    # kept so the client can sign in again if Nextory rejects the token
+                    CONF_USERNAME: username,
+                    CONF_PASSWORD: password,
                 }
             )
             return
